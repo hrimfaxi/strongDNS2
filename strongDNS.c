@@ -32,8 +32,6 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 
     struct dnshdr * dnsh = (void *)data + sizeof(struct iphdr) + sizeof(struct udphdr);
 
-//    printf("packet: %u %d\n", id,ntohs(dnsh->naddi));
-
     if(ntohs(dnsh->naddi) == 0)
         return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
 
@@ -50,11 +48,11 @@ int main(int argc, char **argv)
     assert(nfq_unbind_pf(h, AF_INET) == 0);
     assert(nfq_bind_pf(h, AF_INET) == 0);
 
-    assert((qh = nfq_create_queue(h, 80, &cb, NULL)) != NULL);
+    assert((qh = nfq_create_queue(h, 1, &cb, NULL)) != NULL);
     assert(nfq_set_mode(qh, NFQNL_COPY_PACKET, 0xffff) == 0);
 
     
-    for(int rv; (rv = recv(nfq_fd(h), buf, 11111111/*sizeof(buf)*/, 0)) && rv >= 0;)
+    for(int rv; (rv = recv(nfq_fd(h), buf, sizeof(buf), 0)) && rv >= 0;)
         nfq_handle_packet(h, buf, rv);
     
     nfq_destroy_queue(qh);
