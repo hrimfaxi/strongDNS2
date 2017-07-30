@@ -13,7 +13,8 @@
     
     run.sh
     
-默认支持的 DNS server 为 8.8.8.8
+默认支持的 DNS server 为 8.8.8.
+
 修改 run.sh 下的 dns_server 字段即可添加 server
     
 ## 原理
