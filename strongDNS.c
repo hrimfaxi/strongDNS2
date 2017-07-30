@@ -1,14 +1,12 @@
 #include <stdio.h>
 #include <assert.h>
 #include <netinet/in.h>
-#include <linux/types.h>
 #include <linux/netfilter.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
 #include <linux/ip.h>
-#include <arpa/inet.h>
 #include <linux/udp.h>
-#include <stdint.h>
 
+#define QUEUE_NUM 1
 
 struct dnshdr
 {   
@@ -19,7 +17,6 @@ struct dnshdr
   	uint16_t nauth;
   	uint16_t naddi;
 };
-
 
 
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
@@ -48,7 +45,7 @@ int main(int argc, char **argv)
     assert(nfq_unbind_pf(h, AF_INET) == 0);
     assert(nfq_bind_pf(h, AF_INET) == 0);
 
-    assert((qh = nfq_create_queue(h, 1, &cb, NULL)) != NULL);
+    assert((qh = nfq_create_queue(h, QUEUE_NUM, &cb, NULL)) != NULL);
     assert(nfq_set_mode(qh, NFQNL_COPY_PACKET, 0xffff) == 0);
 
     
