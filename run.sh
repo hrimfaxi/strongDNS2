@@ -1,3 +1,5 @@
+#!/bin/sh
+
 dns_server="{8.8.8.8}"
 
 sudo nft add table strongDNS   
