@@ -1,0 +1,57 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=15
+USE_PROCD=1
+
+DNS_SERVER_V4="{1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,208.67.222.222,185.222.222.222,45.11.45.11,149.112.112.112}"
+DNS_SERVER_V6="{2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9}"
+STRONGDNS2_BIN="/usr/bin/strongDNS2"
+QUEUENUM=1
+
+start_service() {
+	echo "Starting strongDNS2 service..."
+
+	nft delete table inet strongDNS2 >/dev/null 2>&1
+	cat <<EOF | nft -f -
+define DNS_SERVER_V4 = $DNS_SERVER_V4
+define DNS_SERVER_V6 = $DNS_SERVER_V6
+table inet strongDNS2 {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		ip saddr $DNS_SERVER_V4 udp sport 53 counter queue to $QUEUENUM
+		ip6 saddr $DNS_SERVER_V6 udp sport 53 counter queue to $QUEUENUM
+	}
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		ip saddr $DNS_SERVER_V4 udp sport 53 counter queue to $QUEUENUM
+		ip6 saddr $DNS_SERVER_V6 udp sport 53 counter queue to $QUEUENUM
+	}
+}
+EOF
+	procd_open_instance
+	procd_set_param command "$STRONGDNS2_BIN" -q $QUEUENUM # -d
+	procd_set_param respawn
+
+	# 如果 ujail 和 capabilities 配置存在，则启用沙盒保护
+	if [ -x /sbin/ujail ] && [ -e /etc/capabilities/strongDNS2.json ]; then
+		procd_add_jail strongDNS2 ronly requirejail
+		procd_set_param capabilities /etc/capabilities/strongDNS2.json
+		procd_set_param user nobody
+		procd_set_param group nogroup
+		procd_set_param no_new_privs 1
+
+		procd_add_jail_mount /usr/share/strongDNS2
+		procd_add_jail_mount "$STRONGDNS2_BIN"
+	fi
+
+	procd_set_param stderr 1
+	procd_set_param stdout 1
+	procd_close_instance
+}
+
+stop_service() {
+	echo "Stopping strongDNS2 service..."
+	nft delete table inet strongDNS2 >/dev/null 2>&1
+	service_stop "$STRONGDNS2_BIN"
+}

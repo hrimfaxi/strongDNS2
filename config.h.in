@@ -1,0 +1,9 @@
+#pragma once
+
+// 定义数据文件安装路径
+#define DATA_PREFIX "@RUNTIME_DATA_PREFIX@"
+
+// 定义程序名称
+#define PROGRAM_NAME "@PROJECT_NAME@"
+
+#cmakedefine HAVE_SYS_RANDOM_H ${HAVE_SYS_RANDOM_H}
