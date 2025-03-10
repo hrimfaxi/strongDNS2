@@ -10,6 +10,7 @@ set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} \
 -Wl,--as-needed -Wl,--no-copy-dt-needed-entries \
 -Werror -Wtrampolines -Wbidi-chars=any -fPIE -pie -fcf-protection=full -fno-delete-null-pointer-checks -fno-strict-overflow -fno-strict-aliasing -ftrivial-auto-var-init=zero \
 -Werror=implicit -Werror=incompatible-pointer-types -Werror=int-conversion \
+-Wl,-z,max-page-size=4096 -Wl,--gc-sections \
 -fexceptions")
 
 # 指定交叉编译工具链的路径
