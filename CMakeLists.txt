@@ -58,4 +58,5 @@ install(FILES ipv4.txt ipv6.txt
 get_filename_component(PARENT_DIR ${CMAKE_INSTALL_PREFIX} DIRECTORY)
 install(DIRECTORY openwrt-contrib/etc
   DESTINATION "${PARENT_DIR}"
+  USE_SOURCE_PERMISSIONS
 )
