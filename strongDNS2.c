@@ -141,11 +141,12 @@ typedef struct HashNode
 // 通用哈希表结构
 typedef struct HashTable
 {
-	uint32_t   bucket_size;                               // 哈希桶大小
-	HashNode **buckets;                                   // 哈希表
-	uint32_t (*hash_func)(const void *key);               // 哈希函数
-	bool (*cmp_func)(const void *key1, const void *key2); // 比较函数
-	size_t key_size;                                      // key 的大小
+	uint32_t   bucket_size;                                         // 哈希桶大小
+	uint32_t   seed;                                                // 哈希种子
+	HashNode **buckets;                                             // 哈希表
+	uint32_t (*hash_func)(struct HashTable *hash, const void *key); // 哈希函数
+	bool (*cmp_func)(const void *key1, const void *key2);           // 比较函数
+	size_t key_size;                                                // key 的大小
 } HashTable;
 
 // 判断一个数是否是 2 的幂
@@ -153,9 +154,45 @@ static inline bool is_power_of_two(uint32_t x) {
 	return (x != 0) && ((x & (x - 1)) == 0);
 }
 
+static int get_random_bytes(void *buf, size_t nbytes) {
+	ssize_t result;
+
+#ifdef HAVE_SYS_RANDOM_H
+	result = getrandom(buf, nbytes, 0);
+#else
+	result = -1;
+#endif
+
+	if (result == -1) {
+		int fd = open("/dev/urandom", O_RDONLY);
+		if (fd < 0) {
+			return fd;
+		}
+
+		result = read(fd, buf, nbytes);
+		close(fd);
+
+		if (result != (ssize_t) nbytes) {
+			return -1;
+		}
+	} else if (result != (ssize_t) nbytes) {
+		return -1;
+	}
+
+	return (int) nbytes;
+}
+
 // 初始化哈希表
-HashTable *hash_table_init(uint32_t bucket_size, size_t key_size, uint32_t (*hash_func)(const void *key),
+HashTable *hash_table_init(uint32_t bucket_size, size_t key_size,
+			   uint32_t (*hash_func)(struct HashTable *hash, const void *key),
 			   bool (*cmp_func)(const void *key1, const void *key2)) {
+	uint32_t seed;
+
+	if (get_random_bytes(&seed, sizeof(seed)) < 0) {
+		LOG_ERR("cannot generate hash table seed\n");
+		return NULL;
+	}
+
 	// 检查 bucket_size 是否是 2 的幂
 	if (!is_power_of_two(bucket_size)) {
 		LOG_ERR("bucket_size must be a power of 2\n");
@@ -177,6 +214,7 @@ HashTable *hash_table_init(uint32_t bucket_size, size_t key_size, uint32_t (*has
 
 	*table = (typeof(*table)) {
 		.bucket_size = bucket_size,
+		.seed        = seed,
 		.key_size    = key_size,
 		.hash_func   = hash_func,
 		.cmp_func    = cmp_func,
@@ -188,7 +226,7 @@ HashTable *hash_table_init(uint32_t bucket_size, size_t key_size, uint32_t (*has
 
 // 向哈希表添加元素
 void hash_table_add(HashTable *table, const void *key) {
-	uint32_t hash  = table->hash_func(key);
+	uint32_t hash  = table->hash_func(table, key);
 	uint32_t index = hash & (table->bucket_size - 1);
 
 	// 检查是否已存在
@@ -220,7 +258,7 @@ void hash_table_add(HashTable *table, const void *key) {
 
 // 检查是否在哈希表中
 bool hash_table_contains(HashTable *table, const void *key) {
-	uint32_t hash  = table->hash_func(key);
+	uint32_t hash  = table->hash_func(table, key);
 	uint32_t index = hash & (table->bucket_size - 1);
 
 	HashNode *current = table->buckets[index];
@@ -248,19 +286,35 @@ void hash_table_free(HashTable *table) {
 	free(table);
 }
 
-static uint32_t ipv4_seed;
-static uint32_t ipv6_seed;
+void print_hash_stat(HashTable *table) {
+	size_t cnt, max_cnt = 0;
 
-uint32_t ipv4_hash_function(const void *key) {
-	return XXH32(key, sizeof(struct in_addr), ipv4_seed);
+	printf("Hash table: %p\n", table);
+	for (size_t i = 0; i < table->bucket_size; i++) {
+		HashNode *n = table->buckets[i];
+
+		cnt = 0;
+		for (cnt = 0; n != NULL; n = n->next, cnt++) {
+		}
+
+		printf("Hash [%03zu]: %02zu elements\n", i, cnt);
+		if (max_cnt < cnt)
+			max_cnt = cnt;
+	}
+
+	printf("max element count: %03zu\n", max_cnt);
+}
+
+uint32_t ipv4_hash_function(HashTable *table, const void *key) {
+	return XXH32(key, sizeof(struct in_addr), table->seed);
 }
 
 bool ipv4_cmp_function(const void *key1, const void *key2) {
 	return memcmp(key1, key2, sizeof(struct in_addr)) == 0;
 }
 
-uint32_t ipv6_hash_function(const void *key) {
-	return XXH32(key, sizeof(struct in6_addr), ipv6_seed);
+uint32_t ipv6_hash_function(HashTable *table, const void *key) {
+	return XXH32(key, sizeof(struct in6_addr), table->seed);
 }
 
 bool ipv6_cmp_function(const void *key1, const void *key2) {
@@ -546,53 +600,6 @@ static void handle_signal(int sig) {
 	}
 }
 
-void print_hash_stat(HashTable *table) {
-	size_t cnt, max_cnt = 0;
-
-	printf("Hash table: %p\n", table);
-	for (size_t i = 0; i < table->bucket_size; i++) {
-		HashNode *n = table->buckets[i];
-
-		cnt = 0;
-		for (cnt = 0; n != NULL; n = n->next, cnt++) {
-		}
-
-		printf("Hash [%03zu]: %02zu elements\n", i, cnt);
-		if (max_cnt < cnt)
-			max_cnt = cnt;
-	}
-
-	printf("max element count: %03zu\n", max_cnt);
-}
-
-static int get_random_bytes(void *buf, size_t nbytes) {
-	ssize_t result;
-
-#ifdef HAVE_SYS_RANDOM_H
-	result = getrandom(buf, nbytes, 0);
-#else
-	result = -1;
-#endif
-
-	if (result == -1) {
-		int fd = open("/dev/urandom", O_RDONLY);
-		if (fd < 0) {
-			return fd;
-		}
-
-		result = read(fd, buf, nbytes);
-		close(fd);
-
-		if (result != (ssize_t) nbytes) {
-			return -1;
-		}
-	} else if (result != (ssize_t) nbytes) {
-		return -1;
-	}
-
-	return (int) nbytes;
-}
-
 int main(int argc, char **argv) {
 	struct nfq_handle   *h  = NULL;
 	struct nfq_q_handle *qh = NULL;
@@ -628,9 +635,6 @@ int main(int argc, char **argv) {
 			goto out;
 		}
 	}
-
-	ASSERT(get_random_bytes(&ipv4_seed, sizeof(ipv4_seed)) >= 0);
-	ASSERT(get_random_bytes(&ipv6_seed, sizeof(ipv6_seed)) >= 0);
 
 	ipv4_table = hash_table_init(CONFIG.ipv4_bucket_size, sizeof(struct in_addr), ipv4_hash_function, ipv4_cmp_function);
 	if (!ipv4_table) {
