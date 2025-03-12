@@ -82,6 +82,7 @@ cd libnetfilter_queue
 CFLAGS=-I$HOME/openwrt-mipsel/include LDFLAGS=-L$HOME/openwrt-mipsel/lib ./configure --host=mipsel-openwrt-linux-musl --prefix=$HOME/openwrt-mipsel/ --disable-html-doc --disable-man-pages
 make clean && make -j && make install
 cd -
+```
 
 然后，编译可执行文件
 
