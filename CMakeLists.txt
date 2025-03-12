@@ -14,6 +14,7 @@ project(strongDNS2 C)
 
 # 添加源文件
 set(SOURCES strongDNS2.c xxhash32-ref.c)
+include_directories(${CMAKE_BINARY_DIR})
 
 # 添加可执行文件
 add_executable(${PROJECT_NAME} ${SOURCES})
