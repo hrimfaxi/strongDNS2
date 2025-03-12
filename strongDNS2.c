@@ -274,8 +274,9 @@ bool hash_table_contains(HashTable *table, const void *key) {
 
 // 清理哈希表
 void hash_table_free(HashTable *table) {
-	for (size_t i = 0; i < table->bucket_size; i++) {
+	for (uint32_t i = 0; i < table->bucket_size; i++) {
 		HashNode *current = table->buckets[i];
+
 		while (current) {
 			HashNode *temp = current;
 			current        = current->next;
@@ -290,14 +291,16 @@ void print_hash_stat(HashTable *table) {
 	size_t cnt, max_cnt = 0;
 
 	printf("Hash table: %p\n", table);
-	for (size_t i = 0; i < table->bucket_size; i++) {
-		HashNode *n = table->buckets[i];
+	for (uint32_t i = 0; i < table->bucket_size; i++) {
+		HashNode *current = table->buckets[i];
 
 		cnt = 0;
-		for (cnt = 0; n != NULL; n = n->next, cnt++) {
+		while (current) {
+			current = current->next;
+			cnt++;
 		}
 
-		printf("Hash [%03zu]: %02zu elements\n", i, cnt);
+		printf("Hash [%03u]: %02zu elements\n", i, cnt);
 		if (max_cnt < cnt)
 			max_cnt = cnt;
 	}
