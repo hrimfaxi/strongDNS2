@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <linux/netfilter/nfnetlink_queue.h>
@@ -63,12 +64,15 @@
 #define QUEUE_NUM        1
 #define IPV4_BUCKET_SIZE 512
 #define IPV6_BUCKET_SIZE 64
+#define MAX_DNS_NAME_LEN 255
+#define MAX_JUMP_COUNT   10
 
 uint32_t XXH32(void const *const input, size_t const length, uint32_t const seed);
 
 typedef struct
 {
 	bool        debug;
+	bool        short_video_mark;
 	uint16_t    queue_num;
 	uint32_t    ipv4_bucket_size;
 	uint32_t    ipv6_bucket_size;
@@ -78,6 +82,7 @@ typedef struct
 
 Config CONFIG = {
 	.debug            = false,
+	.short_video_mark = false,
 	.queue_num        = QUEUE_NUM,
 	.ipv4_list_fn     = IPV4_LIST_FN,
 	.ipv6_list_fn     = IPV6_LIST_FN,
@@ -372,6 +377,192 @@ static const uint8_t *skip_dns_name(const uint8_t *p, const uint8_t *end) {
 	return p;
 }
 
+static int get_dns_name(const uint8_t *dns, size_t dns_len, const uint8_t *name, char *domain, size_t max_domain_len) {
+	const uint8_t *p;
+	const uint8_t *end        = dns + dns_len;
+	int            jump_count = 0;
+	size_t         domain_pos = 0;
+	const uint8_t *name_end   = NULL; // 记录域名结束位置
+
+	if (!dns || dns_len < sizeof(struct dnshdr) || !name || !domain || !max_domain_len) {
+		return -1;
+	}
+
+	if (name < dns || name >= end)
+		return -1;
+
+	p         = name;
+	domain[0] = '\0';
+
+	while (p < end) {
+		uint8_t label_len = *p;
+
+		if ((label_len & 0xC0) == 0xC0) {
+			// 压缩指针处理
+			if (p + 2 > end) {
+				return -1;
+			}
+
+			// 如果第一次遇到压缩指针，记录当前位置作为结束位置
+			if (!name_end) {
+				name_end = p + 2; // 压缩指针占2字节，之后就是下一个字段
+			}
+
+			// 安全读取偏移量
+			uint16_t offset = ((p[0] & 0x3F) << 8) | p[1];
+			if (offset >= dns_len) {
+				return -1;
+			}
+
+			p = dns + offset;
+			jump_count++;
+
+			if (jump_count > MAX_JUMP_COUNT) {
+				return -1;
+			}
+		} else {
+			// 普通标签处理
+			if (!label_len) {
+				// 记录域名结束位置（如果没有遇到过压缩指针）
+				if (!name_end) {
+					name_end = p + 1; // +1 跳过结束字节
+				}
+				break;
+			}
+
+			if (label_len > 63 || p + label_len + 1 > end) {
+				return -1;
+			}
+
+			// 确保缓冲区足够大
+			if (domain_pos + label_len + 2 <= max_domain_len) { // +2 for '.' 和 '\0'
+				memcpy(&domain[domain_pos], p + 1, label_len);
+				domain_pos += label_len;
+				domain[domain_pos++] = '.';
+			} else {
+				return -1;
+			}
+
+			p += label_len + 1;
+		}
+	}
+
+	if (p > end || !name_end || name_end > end) {
+		return -1;
+	}
+
+	// 处理域名终止符
+	if (domain_pos) {
+		// 截断最大域名
+		if (domain_pos == max_domain_len) {
+			domain[domain_pos - 1] = '\0';
+		}
+
+		size_t last = strlen(domain);
+		if (last && domain[last - 1] == '.')
+			domain[last - 1] = '\0';
+	} else {
+		// 空域名情况
+		if (max_domain_len > 0) {
+			domain[0] = '\0';
+		} else {
+			return -1;
+		}
+	}
+
+	// 返回域名结束后的偏移量
+	return (int) (name_end - name);
+}
+
+static int add_nftable_ipset(char *table_name, char *ipset_name, char *ip_addr) {
+	pid_t pid = fork();
+
+	if (pid == -1) {
+		perror("fork");
+		return -1;
+	} else if (pid == 0) {
+		char *fmt_ip_addr;
+
+		if (asprintf(&fmt_ip_addr, "{ %s }", ip_addr) < 0)
+			return -1;
+
+		char *const argv[] = {
+			"/usr/sbin/nft", "add", "element", "inet", table_name, ipset_name, fmt_ip_addr, NULL,
+		};
+
+		execve(argv[0], argv, NULL);
+		perror("execve");
+		exit(1);
+	}
+
+	int status;
+
+	if (waitpid(pid, &status, 0) == -1) {
+		perror("wait");
+		return -1;
+	}
+
+	return WIFEXITED(status) ? 0 : -1;
+}
+
+static bool is_short_video_site(const char *domain_name) {
+	const char *sites[] = {
+		"amemv.com",
+		"baijiahao.baidu.com",
+		"bdurl.net",
+		"bytedance.net",
+		"dm.toutiao.com",
+		"douyin.com",
+		"douyincdn.com",
+		"douyincdn.com",
+		"gifshow.com",
+		"haokan.baidu.com",
+		"hs.ixigua.com",
+		"hs.pstatp.com",
+		"huawei.com",
+		"huaweicloud.com",
+		"huoshan.com",
+		"ixigua.com",
+		"ixiguavideo.com",
+		"ksapisrv.com",
+		"kuaishou.com",
+		"kuaishoupay.com",
+		"meipai.com",
+		"miaopai.com",
+		"qupai.me",
+		"snssdk.com",
+		"tieba.baidu.com",
+		"tieba.com",
+		"tiktokv.com",
+		"toutiao.com",
+		"kandian.qq.com",
+		"weishi.qq.com",
+		"xiongzhang.baidu.com",
+		"yximgs.com",
+		"sns-video-ak.xhscdn.com",
+		"tiktok.com",
+		"xiaohongshu.com",
+		"toutiao.com",
+		"snssdk",
+		"douyin",
+		"toutiao",
+		"ixigua",
+		"365yg",
+		"amemv",
+		"weishi.qq.com",
+		"tiktok",
+		"xhscdn.com",
+		NULL,
+	};
+
+	for (const char **domain = sites; *domain != NULL; domain++) {
+		if (strstr(domain_name, *domain))
+			return true;
+	}
+
+	return false;
+}
+
 static bool is_dns_polluted(const unsigned char *data, size_t len) {
 	if (len < sizeof(struct iphdr) && len < sizeof(struct ip6_hdr)) {
 		return false;
@@ -418,15 +609,27 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 		return false; // DNS 报头长度不足
 	}
 
-	// 跳过 DNS 报头和问题部分，定位到应答部分
-	const uint8_t *p   = dns_data + sizeof(struct dnshdr);
 	const uint8_t *end = dns_data + dns_len;
 
-	p = skip_dns_name(p, end);
-	if (!p)
+	if (CONFIG.debug) {
+		printf("dns_data\n");
+		hexdump(dns_data, dns_len);
+	}
+
+	char domain_name[MAX_DNS_NAME_LEN];
+	// 跳过 DNS 报头和问题部分，定位到应答部分
+	const uint8_t *p = dns_data + sizeof(struct dnshdr);
+	int            l = get_dns_name(dns_data, dns_len, p, domain_name, sizeof(domain_name));
+
+	if (l < 0)
 		return false;
 
-	p += 4; // 跳过 QTYPE 和 QCLASS
+	if (CONFIG.debug) {
+		printf("domain name: %s\n", domain_name);
+	}
+
+	// 跳过 TYPE(2字节) 和 CLASS(2字节)
+	p += l + 4;
 
 	if (p >= end)
 		return false;
@@ -442,6 +645,12 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 
 	// 遍历应答部分，提取 A 记录
 	while (answer_section + 12 <= end) {
+		char answer_domain[MAX_DNS_NAME_LEN];
+
+		if (get_dns_name(dns_data, dns_len, answer_section, answer_domain, sizeof(answer_domain)) < 0) {
+			answer_domain[0] = '\0';
+		}
+
 		p = skip_dns_name(answer_section, end);
 		if (!p)
 			break;
@@ -490,9 +699,27 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 				char ipaddr_str[INET6_ADDRSTRLEN];
 
 				if (inet_ntop(af, &ip_addr, ipaddr_str, sizeof(ipaddr_str)))
-					LOG_ERR("%s: %s polluted, dropping...\n", af == AF_INET ? "IPv4" : "IPv6", ipaddr_str);
+					LOG_ERR("[%s] %s: %s polluted, dropping...\n", af == AF_INET ? "IPv4" : "IPv6",
+						domain_name, ipaddr_str);
 			}
 			break;
+		}
+
+		if (CONFIG.short_video_mark && af && is_short_video_site(domain_name)) {
+			char ipaddr_str[INET6_ADDRSTRLEN];
+
+			if (inet_ntop(af, &ip_addr, ipaddr_str, sizeof(ipaddr_str))) {
+				if (CONFIG.debug) {
+					LOG_ERR("[%s] %s: %s (answer name: %s) add to ipset...\n",
+						af == AF_INET ? "IPv4" : "IPv6", domain_name, ipaddr_str, answer_domain);
+				}
+
+				int err = add_nftable_ipset("douyin", af == AF_INET ? "spam_ips" : "spam_ips6", ipaddr_str);
+
+				if (err) {
+					LOG_ERR("ip: %s add ipset failed\n", ipaddr_str);
+				}
+			}
 		}
 		answer_section = p + data_len; // 跳过当前应答部分
 	}
@@ -519,7 +746,7 @@ static int packet_callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, stru
 }
 
 static void print_usage(const char *program_name) {
-	printf("Usage: %s [-d] [-q queue_num] [-4 ipv4_list] [-6 ipv6-list] [-b ipv4_bucket_size] [-B ipv6_bucket_size]\n",
+	printf("Usage: %s [-d] [-q queue_num] [-4 ipv4_list] [-6 ipv6-list] [-b ipv4_bucket_size] [-B ipv6_bucket_size] [-s]\n",
 	       program_name);
 	printf("  -d    Enable debug mode\n");
 	printf("  -q    queue_num        netfilter queue number (Default: %d)\n", QUEUE_NUM);
@@ -527,6 +754,7 @@ static void print_usage(const char *program_name) {
 	printf("  -6    ipv6_list_fn     polluted IPv6 list file path (Default: %s)\n", IPV6_LIST_FN);
 	printf("  -b    ipv4_bucket_size IPv4 hash bucket size (Default: %d)\n", IPV4_BUCKET_SIZE);
 	printf("  -B    ipv6_bucket_size IPv6 hash bucket size (Default: %d)\n", IPV6_BUCKET_SIZE);
+	printf("  -s                     Mark short video sites (Default: disabled)\n");
 }
 
 static int parse_line(const char *description, const char *file_path, void (*callback)(void *data, const char *line),
@@ -614,7 +842,7 @@ int main(int argc, char **argv) {
 	int                  opt, ret = 0;
 
 	// 使用 getopt 解析命令行参数
-	while ((opt = getopt(argc, argv, "dq:4:6:b:B:h")) != -1) {
+	while ((opt = getopt(argc, argv, "dq:4:6:b:B:sh")) != -1) {
 		switch (opt) {
 		case 'd': // 处理 -d 参数
 			CONFIG.debug = true;
@@ -633,6 +861,9 @@ int main(int argc, char **argv) {
 			break;
 		case 'B':
 			CONFIG.ipv6_bucket_size = (uint32_t) strtoul(optarg, NULL, 0);
+			break;
+		case 's':
+			CONFIG.short_video_mark = true;
 			break;
 		case '?':
 		case 'h':
