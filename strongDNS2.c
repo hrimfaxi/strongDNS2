@@ -348,6 +348,30 @@ static bool is_gfw_ipv6(const struct in6_addr *addr) {
 HashTable *ipv4_table = NULL;
 HashTable *ipv6_table = NULL;
 
+static const uint8_t *skip_dns_name(const uint8_t *p, const uint8_t *end) {
+	bool compressed = false;
+
+	while (p < end && *p != '\0') {
+		uint8_t label_len = *p;
+
+		if ((label_len & 0xC0) == 0xC0) {
+			p += 2;
+			compressed = true;
+			break;
+		} else {
+			const int domain_len = 1 + (int) label_len; // 包括长度字符本身
+			p += domain_len;
+		}
+	}
+
+	if (p >= end)
+		return NULL;
+
+	if (!compressed && *p == '\0') // 检查是否是完整域名的结束符
+		p++;                   // 跳过域名结束的 0 字节
+	return p;
+}
+
 static bool is_dns_polluted(const unsigned char *data, size_t len) {
 	if (len < sizeof(struct iphdr) && len < sizeof(struct ip6_hdr)) {
 		return false;
@@ -398,12 +422,10 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 	const uint8_t *p   = dns_data + sizeof(struct dnshdr);
 	const uint8_t *end = dns_data + dns_len;
 
-	// 跳过问题部分的域名
-	while (p < end && *p != 0) {
-		p += (*p) + 1;
-	}
+	p = skip_dns_name(p, end);
+	if (!p)
+		return false;
 
-	p += 1; // 跳过结束符 0
 	p += 4; // 跳过 QTYPE 和 QCLASS
 
 	if (p >= end)
@@ -420,27 +442,9 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 
 	// 遍历应答部分，提取 A 记录
 	while (answer_section + 12 <= end) {
-		bool compressed = false;
-
-		p = answer_section;
-
-		// 跳过name部分
-		while (p < end && *p != 0) {
-			if ((*p & 0xC0) == 0xC0) { // 如果是压缩指针
-				compressed = true;
-				p += 2; // 跳过指针
-				break;
-			} else {             // 如果是完整域名
-				p += *p + 1; // 跳过标签内容
-			}
-		}
-
-		if (p + 1 > end)
+		p = skip_dns_name(answer_section, end);
+		if (!p)
 			break;
-
-		if (!compressed && *p == 0) { // 检查是否是完整域名的结束符
-			p += 1;               // 跳过域名结束的 0 字节
-		}
 
 		if (p + 10 > end) {
 			break;
