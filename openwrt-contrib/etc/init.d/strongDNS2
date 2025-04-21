@@ -41,7 +41,8 @@ EOF
     procd_set_param group nogroup
     procd_set_param no_new_privs 1
 
-    procd_add_jail_mount /usr/share/strongDNS2
+    procd_add_jail_mount /usr/share/strongDNS2/ipv4.txt
+    procd_add_jail_mount /usr/share/strongDNS2/ipv6.txt
     procd_add_jail_mount /usr/sbin/nft
     procd_add_jail_mount "$STRONGDNS2_BIN"
   fi
