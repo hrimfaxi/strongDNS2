@@ -249,7 +249,7 @@ void hash_table_add(HashTable *table, const void *key) {
 
 	// 分配新节点
 	size_t    node_size = offsetof(HashNode, data) + table->key_size;
-	HashNode *new_node  = (HashNode *) malloc(node_size);
+	HashNode *new_node  = (typeof(new_node)) malloc(node_size);
 	if (!new_node) {
 		LOG_ERR("failed to allocate memory for new node\n");
 		exit(EXIT_FAILURE);
@@ -956,9 +956,10 @@ int main(int argc, char **argv) {
 	ASSERT((qh = nfq_create_queue(h, CONFIG.queue_num, &packet_callback, NULL)) != NULL);
 	ASSERT(nfq_set_mode(qh, NFQNL_COPY_PACKET, 0xffff) == 0);
 
-	struct timeval timeout;
-	timeout.tv_sec  = 1;
-	timeout.tv_usec = 0;
+	struct timeval timeout = {
+		.tv_sec  = 1,
+		.tv_usec = 0,
+	};
 	ASSERT(setsockopt(nfq_fd(h), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
 
 	signal(SIGINT, handle_signal);

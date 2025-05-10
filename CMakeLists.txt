@@ -39,7 +39,7 @@ target_link_libraries(${PROJECT_NAME} ${LIB_NETFILTER_QUEUE} ${LIB_MNL} ${LIB_NF
 
 include(GNUInstallDirs)
 
-set(RUNTIME_DATA_DIR "/usr/share")
+set(RUNTIME_DATA_DIR "/usr/share" CACHE PATH "Path to runtime data directory")
 set(RUNTIME_DATA_PREFIX "${RUNTIME_DATA_DIR}/${PROJECT_NAME}")
 
 configure_file(
