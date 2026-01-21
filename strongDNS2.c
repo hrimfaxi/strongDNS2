@@ -73,6 +73,7 @@ typedef struct
 {
 	bool        debug;
 	bool        short_video_mark;
+	bool        youtube_mark;
 	uint16_t    queue_num;
 	uint32_t    ipv4_bucket_size;
 	uint32_t    ipv6_bucket_size;
@@ -83,6 +84,7 @@ typedef struct
 Config CONFIG = {
 	.debug            = false,
 	.short_video_mark = false,
+	.youtube_mark     = false,
 	.queue_num        = QUEUE_NUM,
 	.ipv4_list_fn     = IPV4_LIST_FN,
 	.ipv6_list_fn     = IPV6_LIST_FN,
@@ -474,7 +476,7 @@ static int get_dns_name(const uint8_t *dns, size_t dns_len, const uint8_t *name,
 	return (int) (name_end - name);
 }
 
-static int add_nftable_ipset(char *table_name, char *ipset_name, char *ip_addr) {
+static int add_nftable_ipset(const char *table_name, char *ipset_name, char *ip_addr) {
 	pid_t pid = fork();
 
 	if (pid == -1) {
@@ -487,7 +489,7 @@ static int add_nftable_ipset(char *table_name, char *ipset_name, char *ip_addr) 
 			return -1;
 
 		char *const argv[] = {
-			"/usr/sbin/nft", "add", "element", "inet", table_name, ipset_name, fmt_ip_addr, NULL,
+			"/usr/sbin/nft", "add", "element", "inet", (char *) table_name, ipset_name, fmt_ip_addr, NULL,
 		};
 
 		execve(argv[0], argv, NULL);
@@ -551,6 +553,9 @@ static const char *short_video_sites[] = {
 	"weishi.qq.com",
 	"tiktok",
 	"xhscdn.com",
+	"gitv.tv",
+	"aisee.tv",
+	"atianqi.com",
 	NULL,
 };
 
@@ -561,6 +566,59 @@ static bool is_short_video_site(const char *domain_name) {
 	}
 
 	return false;
+}
+
+static const char *youtube_sites[] = {
+	"googlevideo.com",
+	"youtubei.googleapis.com",
+	"youtube.googleapis.com",
+	"youtu.be",
+	"youtube-nocookie.com",
+	"youtubeembeddedplayer.googleapis.com",
+	"withyoutube.com",
+	"youtubekids.com",
+	"youtubegaming.com",
+	"youtubefanfest.com",
+	"youtubeeducation.com",
+	"ytimg.com",
+	"ggpht.com",
+	"1e100.net",
+	NULL,
+};
+
+static bool is_youtube_site(const char *domain_name) {
+	for (const char **domain = youtube_sites; *domain != NULL; domain++) {
+		if (strstr(domain_name, *domain))
+			return true;
+	}
+
+	return false;
+}
+
+typedef union
+{
+	struct in_addr  v4;
+	struct in6_addr v6;
+} NET_ADDR;
+
+static void mark_sites(const char *nftname, bool *mark, int af, NET_ADDR *addr, const char *domain_name,
+		       const char *answer_domain, bool (*test)(const char *)) {
+	if (*mark && af && test(domain_name)) {
+		char ipaddr_str[INET6_ADDRSTRLEN];
+
+		if (inet_ntop(af, addr, ipaddr_str, sizeof(ipaddr_str))) {
+			if (CONFIG.debug) {
+				LOG_ERR("[%s] %s: %s (answer name: %s) add to %s...\n", af == AF_INET ? "IPv4" : "IPv6",
+					domain_name, ipaddr_str, answer_domain, nftname);
+			}
+
+			int err = add_nftable_ipset(nftname, af == AF_INET ? "spam_ips" : "spam_ips6", ipaddr_str);
+
+			if (err) {
+				LOG_ERR("ip: %s add ipset %s failed\n", ipaddr_str, nftname);
+			}
+		}
+	}
 }
 
 static bool is_dns_polluted(const unsigned char *data, size_t len) {
@@ -671,12 +729,8 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 		if (p + data_len > end)
 			break;
 
-		union
-		{
-			struct in_addr  v4;
-			struct in6_addr v6;
-		} ip_addr;
-		int af = 0;
+		NET_ADDR ip_addr;
+		int      af = 0;
 
 		// 如果是 A 记录（type == 1），提取 IP 地址
 		if (type == 1 && data_len == sizeof(struct in_addr)) {
@@ -705,22 +759,8 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 			break;
 		}
 
-		if (CONFIG.short_video_mark && af && is_short_video_site(domain_name)) {
-			char ipaddr_str[INET6_ADDRSTRLEN];
-
-			if (inet_ntop(af, &ip_addr, ipaddr_str, sizeof(ipaddr_str))) {
-				if (CONFIG.debug) {
-					LOG_ERR("[%s] %s: %s (answer name: %s) add to ipset...\n",
-						af == AF_INET ? "IPv4" : "IPv6", domain_name, ipaddr_str, answer_domain);
-				}
-
-				int err = add_nftable_ipset("douyin", af == AF_INET ? "spam_ips" : "spam_ips6", ipaddr_str);
-
-				if (err) {
-					LOG_ERR("ip: %s add ipset failed\n", ipaddr_str);
-				}
-			}
-		}
+		mark_sites("douyin", &CONFIG.short_video_mark, af, &ip_addr, domain_name, answer_domain, is_short_video_site);
+		mark_sites("youtube", &CONFIG.youtube_mark, af, &ip_addr, domain_name, answer_domain, is_youtube_site);
 		answer_section = p + data_len; // 跳过当前应答部分
 	}
 
@@ -755,6 +795,7 @@ static void print_usage(const char *program_name) {
 	printf("  -b    ipv4_bucket_size IPv4 hash bucket size (Default: %d)\n", IPV4_BUCKET_SIZE);
 	printf("  -B    ipv6_bucket_size IPv6 hash bucket size (Default: %d)\n", IPV6_BUCKET_SIZE);
 	printf("  -s                     Mark short video sites (Default: disabled)\n");
+	printf("  -y                     Mark youtube sites (Default: disabled)\n");
 }
 
 static int parse_line(const char *description, const char *file_path, void (*callback)(void *data, const char *line),
@@ -842,7 +883,7 @@ int main(int argc, char **argv) {
 	int                  opt, ret = 0;
 
 	// 使用 getopt 解析命令行参数
-	while ((opt = getopt(argc, argv, "dq:4:6:b:B:sh")) != -1) {
+	while ((opt = getopt(argc, argv, "dq:4:6:b:B:syh")) != -1) {
 		switch (opt) {
 		case 'd': // 处理 -d 参数
 			CONFIG.debug = true;
@@ -864,6 +905,9 @@ int main(int argc, char **argv) {
 			break;
 		case 's':
 			CONFIG.short_video_mark = true;
+			break;
+		case 'y':
+			CONFIG.youtube_mark = true;
 			break;
 		case '?':
 		case 'h':
