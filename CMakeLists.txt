@@ -29,13 +29,15 @@ endmacro(find_include)
 
 find_include(sys/random.h HAVE_SYS_RANDOM_H)
 
-# 查找必需的库
-find_library(LIB_NFNETLINK nfnetlink REQUIRED)
-find_library(LIB_NETFILTER_QUEUE netfilter_queue REQUIRED)
-find_library(LIB_MNL mnl REQUIRED)
+
+find_package(PkgConfig REQUIRED)
+
+pkg_check_modules(REQUIRED libnetfilter_queue)
+pkg_check_modules(REQUIRED libmnl)
+pkg_check_modules(REQUIRED libnfnetlink)
 
 # 链接需要的库
-target_link_libraries(${PROJECT_NAME} ${LIB_NETFILTER_QUEUE} ${LIB_MNL} ${LIB_NFNETLINK})
+target_link_libraries(${PROJECT_NAME} netfilter_queue mnl nfnetlink)
 
 include(GNUInstallDirs)
 
