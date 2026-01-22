@@ -617,7 +617,7 @@ typedef union
 	struct in6_addr v6;
 } NET_ADDR;
 
-static void check_and_mark_sites(int af, NET_ADDR *addr, const char *domain_name, const char *answer_domain) {
+static void check_and_mark_sites(int af, NET_ADDR *addr, const char *domain_name) {
 	// 如果全局配置为空，直接返回
 	if (hlist_empty(&CONFIG.mark_groups))
 		return;
@@ -801,7 +801,7 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 			break;
 		}
 
-		check_and_mark_sites(af, &ip_addr, domain_name, answer_domain);
+		check_and_mark_sites(af, &ip_addr, domain_name);
 		answer_section = p + data_len; // 跳过当前应答部分
 	}
 
