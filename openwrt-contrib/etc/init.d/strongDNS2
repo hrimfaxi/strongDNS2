@@ -6,7 +6,7 @@ USE_PROCD=1
 
 STRONGDNS2_BIN="/usr/bin/strongDNS2"
 STRONGDNS2_DATA="/usr/share/strongDNS2"
-MARK_SITES_NFT="$STRONGDNS2_DATA/libexec/mark_sites-nft.sh"
+MARK_SITES_NFT="$STRONGDNS2_DATA/hooks.d/mark_sites-nft.sh"
 
 DEFAULT_QUEUENUM=1
 DEFAULT_DEBUG=0
