@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# 需要准备openwrt-sdk:
+# ./scripts/feeds update -a
+# scripts/feeds install libnfnetlink libnetfilter-queue libmnl
+# make package/libnfnetlink/compile V=s
+# make package/libmnl/compile V=s
+# make package/libnetfilter-queue/compile V=s
+
+export STAGING_DIR=/home/hrimfaxi/temp/openwrt-sdk-24.10.5-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64/staging_dir/
+TOOLCHAIN_ARRAY=($STAGING_DIR/toolchain-*)
+TARGETROOT_ARRAY=($STAGING_DIR/target-*)
+export TOOLCHAIN="${TOOLCHAIN_ARRAY[0]}"
+export TARGETROOT="${TARGETROOT_ARRAY[0]}"
+
+rm -f CMakeCache.txt
+cmake -DCMAKE_TOOLCHAIN_FILE=./toolchains/openwrt-mipsel.cmake \
+	-DCMAKE_BUILD_TYPE=Release \
+	-DCMAKE_INSTALL_PREFIX=/usr .
+make clean all VERBOSE=1
+make install/strip DESTDIR=stripped
