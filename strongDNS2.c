@@ -22,6 +22,7 @@
 
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -36,12 +37,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <linux/netfilter/nfnetlink_queue.h>
 
 #include <libnetfilter_queue/libnetfilter_queue.h>
+
+#include "list.h"
 
 #include "config.h"
 
@@ -69,27 +73,42 @@
 
 uint32_t XXH32(void const *const input, size_t const length, uint32_t const seed);
 
+// 定义域名节点（链表）
+typedef struct domain_node
+{
+	char             *domain;
+	struct hlist_node node;
+} domain_node_t;
+
+// 定义标记组节点（对应一个文件，例如 youtube）
+typedef struct mark_group
+{
+	char             *nft_name; // nftables set 名称/文件名
+	struct hlist_head domains;  // 域名链表头
+	struct hlist_node node;     // 组链表挂载点
+} mark_group_t;
+
 typedef struct
 {
-	bool        debug;
-	bool        short_video_mark;
-	bool        youtube_mark;
-	uint16_t    queue_num;
-	uint32_t    ipv4_bucket_size;
-	uint32_t    ipv6_bucket_size;
-	const char *ipv4_list_fn;
-	const char *ipv6_list_fn;
+	bool              debug;
+	struct hlist_head mark_groups;
+	uint16_t          queue_num;
+	uint32_t          ipv4_bucket_size;
+	uint32_t          ipv6_bucket_size;
+	const char       *ipv4_list_fn;
+	const char       *ipv6_list_fn;
+	const char       *mark_sites_dir;
 } Config;
 
 Config CONFIG = {
 	.debug            = false,
-	.short_video_mark = false,
-	.youtube_mark     = false,
+	.mark_groups      = HLIST_HEAD_INIT,
 	.queue_num        = QUEUE_NUM,
 	.ipv4_list_fn     = IPV4_LIST_FN,
 	.ipv6_list_fn     = IPV6_LIST_FN,
 	.ipv4_bucket_size = IPV4_BUCKET_SIZE,
 	.ipv6_bucket_size = IPV6_BUCKET_SIZE,
+	.mark_sites_dir   = NULL,
 };
 
 struct dnshdr
@@ -507,92 +526,89 @@ static int add_nftable_ipset(const char *table_name, char *ipset_name, char *ip_
 	return WIFEXITED(status) ? 0 : -1;
 }
 
-static const char *short_video_sites[] = {
-	"amemv.com",
-	"baijiahao.baidu.com",
-	"bdurl.net",
-	"bytedance.net",
-	"dm.toutiao.com",
-	"douyin.com",
-	"douyincdn.com",
-	"douyincdn.com",
-	"gifshow.com",
-	"haokan.baidu.com",
-	"hs.ixigua.com",
-	"hs.pstatp.com",
-	"huawei.com",
-	"huaweicloud.com",
-	"huoshan.com",
-	"ixigua.com",
-	"ixiguavideo.com",
-	"ksapisrv.com",
-	"kuaishou.com",
-	"kuaishoupay.com",
-	"meipai.com",
-	"miaopai.com",
-	"qupai.me",
-	"snssdk.com",
-	"tieba.baidu.com",
-	"tieba.com",
-	"tiktokv.com",
-	"toutiao.com",
-	"kandian.qq.com",
-	"weishi.qq.com",
-	"xiongzhang.baidu.com",
-	"yximgs.com",
-	"sns-video-ak.xhscdn.com",
-	"tiktok.com",
-	"xiaohongshu.com",
-	"toutiao.com",
-	"snssdk",
-	"douyin",
-	"toutiao",
-	"ixigua",
-	"365yg",
-	"amemv",
-	"weishi.qq.com",
-	"tiktok",
-	"xhscdn.com",
-	"gitv.tv",
-	"aisee.tv",
-	"atianqi.com",
-	NULL,
-};
-
-static bool is_short_video_site(const char *domain_name) {
-	for (const char **domain = short_video_sites; *domain != NULL; domain++) {
-		if (strstr(domain_name, *domain))
-			return true;
-	}
-
-	return false;
+// 辅助函数：去除字符串首尾空白
+static char *trim_whitespace(char *str) {
+	char *end;
+	while (isspace((unsigned char) *str))
+		str++;
+	if (*str == 0)
+		return str;
+	end = str + strlen(str) - 1;
+	while (end > str && isspace((unsigned char) *end))
+		end--;
+	end[1] = '\0';
+	return str;
 }
 
-static const char *youtube_sites[] = {
-	"googlevideo.com",
-	"youtubei.googleapis.com",
-	"youtube.googleapis.com",
-	"youtu.be",
-	"youtube-nocookie.com",
-	"youtubeembeddedplayer.googleapis.com",
-	"withyoutube.com",
-	"youtubekids.com",
-	"youtubegaming.com",
-	"youtubefanfest.com",
-	"youtubeeducation.com",
-	"ytimg.com",
-	"ggpht.com",
-	"1e100.net",
-	NULL,
-};
-
-static bool is_youtube_site(const char *domain_name) {
-	for (const char **domain = youtube_sites; *domain != NULL; domain++) {
-		if (strstr(domain_name, *domain))
-			return true;
+// 加载单个规则文件
+static void load_mark_file(const char *filepath, const char *filename) {
+	FILE *fp = fopen(filepath, "r");
+	if (!fp) {
+		LOG_ERR("Failed to open mark file: %s\n", filepath);
+		return;
 	}
 
-	return false;
+	mark_group_t *group = malloc(sizeof(mark_group_t));
+	if (!group) {
+		fclose(fp);
+		return;
+	}
+
+	INIT_HLIST_HEAD(&group->domains);
+	group->nft_name = strdup(filename);
+
+	char line[256];
+	while (fgets(line, sizeof(line), fp)) {
+		char *p = trim_whitespace(line);
+
+		// 1. 跳过空行或'#'
+		if (p[0] == 0 || p[0] == '#')
+			continue;
+
+		// 添加域名到链表
+		domain_node_t *node = malloc(sizeof(domain_node_t));
+		if (node) {
+			node->domain = strdup(p);
+			hlist_add_head(&node->node, &group->domains);
+			if (CONFIG.debug) {
+				printf("Loaded rule: [%s] -> %s\n", group->nft_name, node->domain);
+			}
+		}
+	}
+	fclose(fp);
+	LOG_ERR("Loaded mark group: %s\n", filename);
+	hlist_add_head(&group->node, &CONFIG.mark_groups);
+}
+
+// 遍历目录加载所有配置
+static void init_mark_sites() {
+	DIR           *d;
+	struct dirent *dir;
+	char           filepath[1024];
+
+	if (!CONFIG.mark_sites_dir)
+		return;
+	d = opendir(CONFIG.mark_sites_dir);
+	if (!d) {
+		LOG_ERR("Mark sites dir not found: %s\n", CONFIG.mark_sites_dir);
+		return;
+	}
+
+	while ((dir = readdir(d)) != NULL) {
+		// 跳过 . 和 ..
+		if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0)
+			continue;
+
+		// 构造完整路径
+		snprintf(filepath, sizeof(filepath), "%s%s", CONFIG.mark_sites_dir, dir->d_name);
+
+		// 简单判断是否为普通文件
+		struct stat st;
+		if (stat(filepath, &st) == 0 && S_ISREG(st.st_mode)) {
+			load_mark_file(filepath, dir->d_name);
+		}
+	}
+	closedir(d);
 }
 
 typedef union
@@ -601,21 +617,47 @@ typedef union
 	struct in6_addr v6;
 } NET_ADDR;
 
-static void mark_sites(const char *nftname, bool *mark, int af, NET_ADDR *addr, const char *domain_name,
-		       const char *answer_domain, bool (*test)(const char *)) {
-	if (*mark && af && test(domain_name)) {
-		char ipaddr_str[INET6_ADDRSTRLEN];
+static void check_and_mark_sites(int af, NET_ADDR *addr, const char *domain_name, const char *answer_domain) {
+	// 如果全局配置为空，直接返回
+	if (hlist_empty(&CONFIG.mark_groups))
+		return;
 
-		if (inet_ntop(af, addr, ipaddr_str, sizeof(ipaddr_str))) {
-			if (CONFIG.debug) {
-				LOG_ERR("[%s] %s: %s (answer name: %s) add to %s...\n", af == AF_INET ? "IPv4" : "IPv6",
-					domain_name, ipaddr_str, answer_domain, nftname);
-			}
+	mark_group_t      *group;
+	struct hlist_node *tmp;
 
-			int err = add_nftable_ipset(nftname, af == AF_INET ? "spam_ips" : "spam_ips6", ipaddr_str);
+	hlist_for_each_entry(group, tmp, &CONFIG.mark_groups, node) {
+		domain_node_t     *dom_node;
+		struct hlist_node *d_node;
 
-			if (err) {
-				LOG_ERR("ip: %s add ipset %s failed\n", ipaddr_str, nftname);
+		// 内层循环：遍历该组下的具体域名规则
+		hlist_for_each_entry(dom_node, d_node, &group->domains, node) {
+			// 检查访问域名是否包含规则定义的子串
+			if (strstr(domain_name, dom_node->domain)) {
+				char ipaddr_str[INET6_ADDRSTRLEN];
+
+				// 转换 IP 地址为字符串
+				if (inet_ntop(af, addr, ipaddr_str, sizeof(ipaddr_str))) {
+					// 1. 打印调试日志
+					if (CONFIG.debug) {
+						LOG_ERR("[%s] %s: %s (rule: %s in %s) add to nftset...\n",
+							af == AF_INET ? "IPv4" : "IPv6", domain_name, ipaddr_str,
+							dom_node->domain, // 命中的具体规则 (如 googlevideo.com)
+							group->nft_name); // 命中的组名 (如 youtube)
+					}
+
+					// 2. 确定目标 ipset 名称
+					char *set_type = (af == AF_INET) ? "spam_ips" : "spam_ips6";
+
+					// 3. 调用 nftables 添加命令
+					int err = add_nftable_ipset(group->nft_name, set_type, ipaddr_str);
+
+					if (err) {
+						LOG_ERR("ip: %s add to table %s failed\n", ipaddr_str, group->nft_name);
+					}
+				}
+
+				// 命中当前组的一个规则后，立即跳出内层循环，进入下一个组的检查
+				break;
 			}
 		}
 	}
@@ -759,8 +801,7 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 			break;
 		}
 
-		mark_sites("douyin", &CONFIG.short_video_mark, af, &ip_addr, domain_name, answer_domain, is_short_video_site);
-		mark_sites("youtube", &CONFIG.youtube_mark, af, &ip_addr, domain_name, answer_domain, is_youtube_site);
+		check_and_mark_sites(af, &ip_addr, domain_name, answer_domain);
 		answer_section = p + data_len; // 跳过当前应答部分
 	}
 
@@ -789,13 +830,13 @@ static void print_usage(const char *program_name) {
 	printf("Usage: %s [-d] [-q queue_num] [-4 ipv4_list] [-6 ipv6-list] [-b ipv4_bucket_size] [-B ipv6_bucket_size] [-s]\n",
 	       program_name);
 	printf("  -d    Enable debug mode\n");
+	printf("  -m                     Enable mark sites (Default: Disabled)\n");
 	printf("  -q    queue_num        netfilter queue number (Default: %d)\n", QUEUE_NUM);
 	printf("  -4    ipv4_list_fn     polluted IPV4 list file path (Default: %s)\n", IPV4_LIST_FN);
 	printf("  -6    ipv6_list_fn     polluted IPv6 list file path (Default: %s)\n", IPV6_LIST_FN);
 	printf("  -b    ipv4_bucket_size IPv4 hash bucket size (Default: %d)\n", IPV4_BUCKET_SIZE);
 	printf("  -B    ipv6_bucket_size IPv6 hash bucket size (Default: %d)\n", IPV6_BUCKET_SIZE);
-	printf("  -s                     Mark short video sites (Default: disabled)\n");
-	printf("  -y                     Mark youtube sites (Default: disabled)\n");
+	printf("  -M    mark_sites_dir   Set Marked site DIR\n");
 }
 
 static int parse_line(const char *description, const char *file_path, void (*callback)(void *data, const char *line),
@@ -885,7 +926,7 @@ int main(int argc, char **argv) {
 	int                  opt, ret = 0;
 
 	// 使用 getopt 解析命令行参数
-	while ((opt = getopt(argc, argv, "dq:4:6:b:B:syh")) != -1) {
+	while ((opt = getopt(argc, argv, "dq:4:6:b:B:M:msyh")) != -1) {
 		switch (opt) {
 		case 'd': // 处理 -d 参数
 			CONFIG.debug = true;
@@ -905,11 +946,12 @@ int main(int argc, char **argv) {
 		case 'B':
 			CONFIG.ipv6_bucket_size = (uint32_t) strtoul(optarg, NULL, 0);
 			break;
-		case 's':
-			CONFIG.short_video_mark = true;
+		case 'm':
+			if (!CONFIG.mark_sites_dir)
+				CONFIG.mark_sites_dir = DATA_PREFIX "/mark_sites/";
 			break;
-		case 'y':
-			CONFIG.youtube_mark = true;
+		case 'M':
+			CONFIG.mark_sites_dir = optarg;
 			break;
 		case '?':
 		case 'h':
@@ -919,6 +961,8 @@ int main(int argc, char **argv) {
 			goto out;
 		}
 	}
+
+	init_mark_sites();
 
 	ipv4_table = hash_table_init(CONFIG.ipv4_bucket_size, sizeof(struct in_addr), ipv4_hash_function, ipv4_cmp_function);
 	if (!ipv4_table) {
