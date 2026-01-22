@@ -823,9 +823,11 @@ static int parse_line(const char *description, const char *file_path, void (*cal
 		if (!line[0])
 			continue;
 
+#if 0
 		if (CONFIG.debug) {
 			printf("%s: add line %s\n", __func__, line);
 		}
+#endif
 
 		(*callback)(data, line);
 		cnt++;
@@ -944,10 +946,12 @@ int main(int argc, char **argv) {
 		goto out;
 	}
 
+#if 0
 	if (CONFIG.debug) {
 		print_hash_stat(ipv4_table);
 		print_hash_stat(ipv6_table);
 	}
+#endif
 
 	ASSERT((h = nfq_open()) != NULL);
 	ASSERT(nfq_unbind_pf(h, AF_INET) == 0);
