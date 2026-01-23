@@ -160,19 +160,19 @@ void hexdump(const void *data, size_t size) {
 // 通用链表节点结构，带灵活数组成员
 typedef struct HashNode
 {
-	struct HashNode *next;    // 指向下一个节点
-	uint8_t          data[0]; // 存储 key 的灵活数组
+	struct hlist_node node;   // 挂到桶链表
+	uint8_t           data[]; // key 存储
 } HashNode;
 
 // 通用哈希表结构
 typedef struct HashTable
 {
-	uint32_t   bucket_size;                                         // 哈希桶大小
-	uint32_t   seed;                                                // 哈希种子
-	HashNode **buckets;                                             // 哈希表
-	uint32_t (*hash_func)(struct HashTable *hash, const void *key); // 哈希函数
-	bool (*cmp_func)(const void *key1, const void *key2);           // 比较函数
-	size_t key_size;                                                // key 的大小
+	uint32_t           bucket_size;
+	uint32_t           seed;
+	struct hlist_head *buckets; // bucket_size 个 head
+	uint32_t (*hash_func)(struct HashTable *hash, const void *key);
+	bool (*cmp_func)(const void *key1, const void *key2);
+	size_t key_size;
 } HashTable;
 
 // 判断一个数是否是 2 的幂
@@ -225,13 +225,17 @@ HashTable *hash_table_init(uint32_t bucket_size, size_t key_size,
 		return NULL;
 	}
 
-	HashNode **buckets = (typeof(buckets)) calloc(bucket_size, sizeof(*buckets));
+	struct hlist_head *buckets = calloc(bucket_size, sizeof(*buckets));
 	if (!buckets) {
 		LOG_ERR("failed to allocate memory for hash buckets\n");
 		return NULL;
 	}
 
-	HashTable *table = (typeof(table)) malloc(sizeof(*table));
+	for (uint32_t i = 0; i < bucket_size; i++) {
+		INIT_HLIST_HEAD(&buckets[i]);
+	}
+
+	HashTable *table = malloc(sizeof(*table));
 	if (!table) {
 		LOG_ERR("failed to allocate memory for hash table\n");
 		free(buckets);
@@ -255,15 +259,15 @@ void hash_table_add(HashTable *table, const void *key) {
 	uint32_t hash  = table->hash_func(table, key);
 	uint32_t index = hash & (table->bucket_size - 1);
 
-	// 检查是否已存在
-	HashNode *current = table->buckets[index];
-	while (current) {
-		void *current_key = current->data; // key 位于 data 的开始
-		if (table->cmp_func(current_key, key)) {
+	HashNode          *cur;
+	struct hlist_node *tmp;
+
+	hlist_for_each_entry(cur, tmp, &table->buckets[index], node) {
+		const void *cur_key = cur->data;
+		if (table->cmp_func(cur_key, key)) {
 			LOG_ERR("warning: duplicated entry\n");
 			return;
 		}
-		current = current->next;
 	}
 
 	// 分配新节点
@@ -278,8 +282,7 @@ void hash_table_add(HashTable *table, const void *key) {
 	memcpy(new_node->data, key, table->key_size);
 
 	// 插入到链表头部
-	new_node->next        = table->buckets[index];
-	table->buckets[index] = new_node;
+	hlist_add_head(&new_node->node, &table->buckets[index]);
 }
 
 // 检查是否在哈希表中
@@ -287,13 +290,14 @@ bool hash_table_contains(HashTable *table, const void *key) {
 	uint32_t hash  = table->hash_func(table, key);
 	uint32_t index = hash & (table->bucket_size - 1);
 
-	HashNode *current = table->buckets[index];
-	while (current) {
-		void *current_key = current->data; // key 位于 data 的开始
-		if (table->cmp_func(current_key, key)) {
-			return true; // 找到
+	HashNode          *cur;
+	struct hlist_node *tmp;
+
+	hlist_for_each_entry(cur, tmp, &table->buckets[index], node) {
+		const void *cur_key = cur->data;
+		if (table->cmp_func(cur_key, key)) {
+			return true;
 		}
-		current = current->next;
 	}
 	return false; // 未找到
 }
@@ -301,28 +305,30 @@ bool hash_table_contains(HashTable *table, const void *key) {
 // 清理哈希表
 void hash_table_free(HashTable *table) {
 	for (uint32_t i = 0; i < table->bucket_size; i++) {
-		HashNode *current = table->buckets[i];
+		HashNode          *tpos;
+		struct hlist_node *pos, *n;
 
-		while (current) {
-			HashNode *temp = current;
-			current        = current->next;
-			free(temp);
+		hlist_for_each_entry_safe(tpos, pos, n, &table->buckets[i], node) {
+			hlist_del(&tpos->node);
+			free(tpos);
 		}
 	}
+
 	free(table->buckets);
 	free(table);
 }
 
 void print_hash_stat(HashTable *table) {
-	size_t cnt, max_cnt = 0;
+	size_t max_cnt = 0;
 
-	printf("Hash table: %p\n", table);
+	printf("Hash table: %p\n", (void *) table);
 	for (uint32_t i = 0; i < table->bucket_size; i++) {
-		HashNode *current = table->buckets[i];
+		size_t cnt = 0;
 
-		cnt = 0;
-		while (current) {
-			current = current->next;
+		HashNode          *tpos;
+		struct hlist_node *pos;
+
+		hlist_for_each_entry(tpos, pos, &table->buckets[i], node) {
 			cnt++;
 		}
 
