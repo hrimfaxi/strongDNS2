@@ -600,7 +600,7 @@ static void init_mark_sites() {
 			continue;
 
 		// 构造完整路径
-		snprintf(filepath, sizeof(filepath), "%s%s", CONFIG.mark_sites_dir, dir->d_name);
+		snprintf(filepath, sizeof(filepath), "%s/%s", CONFIG.mark_sites_dir, dir->d_name);
 
 		// 简单判断是否为普通文件
 		struct stat st;
