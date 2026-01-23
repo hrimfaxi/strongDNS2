@@ -664,7 +664,7 @@ static void check_and_mark_sites(int af, NET_ADDR *addr, const char *domain_name
 }
 
 static bool is_dns_polluted(const unsigned char *data, size_t len) {
-	if (len < sizeof(struct iphdr) && len < sizeof(struct ip6_hdr)) {
+	if (len < sizeof(struct iphdr)) {
 		return false;
 	}
 
