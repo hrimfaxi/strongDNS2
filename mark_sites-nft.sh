@@ -22,7 +22,7 @@ set spam_ips6 {
 EOF
 }
 
-# Douyin: 对短视频IP基于80%的丢包
+# Douyin
 apply_douyin() {
   "$NFT" -f - <<EOF
   table inet douyin {
@@ -30,9 +30,9 @@ apply_douyin() {
 
     chain prerouting {
       type filter hook prerouting priority -200; policy accept;
-
-      ip  saddr @spam_ips add @spam_ips  { ip  saddr timeout 1h } numgen random mod 100 < 80 counter drop
-      ip6 saddr @spam_ips6 add @spam_ips6 { ip6 saddr timeout 1h } numgen random mod 100 < 80 counter drop
+      # 对短视频IP基于80%的丢包(默认不开启)
+      # ip  saddr @spam_ips add @spam_ips  { ip  saddr timeout 1h } numgen random mod 100 < 80 counter drop
+      # ip6 saddr @spam_ips6 add @spam_ips6 { ip6 saddr timeout 1h } numgen random mod 100 < 80 counter drop
     }
 }
 EOF
