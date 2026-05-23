@@ -669,6 +669,237 @@ static void check_and_mark_sites(int af, NET_ADDR *addr, const char *domain_name
 	}
 }
 
+static inline uint16_t read_be16_unaligned(const uint8_t *p) {
+	uint16_t v;
+
+	memcpy(&v, p, sizeof(v));
+	return ntohs(v);
+}
+
+/**
+ * 跳过 HTTPS/SVCB RR 中的 TargetName 字段，返回跳过的字节数。
+ *
+ * base/end 是整个 DNS 消息范围，用于校验压缩指针。
+ * p 是 TargetName 起始位置。
+ *
+ * 成功返回 TargetName 在原始位置占用的字节数：
+ *   - root name "." 返回 1
+ *   - 普通域名返回完整 wire-name 长度
+ *   - 遇到压缩指针时，返回到压缩指针结束处的长度
+ *
+ * 失败返回 0。
+ */
+size_t skip_https_targetname(const uint8_t *base, const uint8_t *end, const uint8_t *p) {
+	const uint8_t *orig;
+	const uint8_t *cur;
+	size_t         consumed = 0;
+	int            jumps    = 0;
+	bool           jumped   = false;
+
+	if (!base || !end || !p || base >= end || p < base || p >= end)
+		return 0;
+
+	orig = p;
+	cur  = p;
+
+	while (cur < end) {
+		uint8_t label_len = *cur;
+
+		/*
+		 * DNS compression pointer:
+		 * 11xxxxxx xxxxxxxx
+		 */
+		if ((label_len & 0xC0) == 0xC0) {
+			uint16_t       offset;
+			const uint8_t *next;
+
+			if (cur + 2 > end)
+				return 0;
+
+			offset = (uint16_t) (((cur[0] & 0x3F) << 8) | cur[1]);
+			if (offset >= (uint16_t) (end - base))
+				return 0;
+
+			next = base + offset;
+			if (next < base || next >= end)
+				return 0;
+
+			if (!jumped)
+				consumed = (size_t) ((cur + 2) - orig);
+
+			cur    = next;
+			jumped = true;
+
+			jumps++;
+			if (jumps > MAX_JUMP_COUNT)
+				return 0;
+
+			continue;
+		}
+
+		/*
+		 * 01xxxxxx / 10xxxxxx 是保留格式，不是合法普通 label。
+		 */
+		if (label_len & 0xC0)
+			return 0;
+
+		/*
+		 * root label，TargetName 结束。
+		 */
+		if (label_len == 0) {
+			if (!jumped)
+				consumed = (size_t) ((cur + 1) - orig);
+
+			return consumed;
+		}
+
+		if (label_len > 63)
+			return 0;
+
+		if (cur + 1 + label_len > end)
+			return 0;
+
+		cur += 1 + label_len;
+	}
+
+	return 0;
+}
+
+typedef void (*https_hint_cb_t)(int af, const void *addr, void *user);
+
+/**
+ * 解析 HTTPS RR 的 SvcParams，识别 ipv4hint / ipv6hint。
+ *
+ * 注意：这里的 rdata 参数实际指向 SvcParams 起始位置，
+ * 即 HTTPS RR RDATA 中 TargetName 之后的位置。
+ */
+void parse_https_rr_hints(const uint8_t *base, size_t dns_len, const uint8_t *rdata, uint16_t rdlen, https_hint_cb_t hint_cb,
+			  void *user) {
+	const uint8_t *dns_end;
+	const uint8_t *p;
+	const uint8_t *end;
+
+	if (!base || !rdata || !hint_cb)
+		return;
+
+	dns_end = base + dns_len;
+	if (dns_end < base)
+		return;
+
+	if (rdata < base || rdata > dns_end)
+		return;
+
+	if ((size_t) (dns_end - rdata) < rdlen)
+		return;
+
+	p   = rdata;
+	end = rdata + rdlen;
+
+	while (p < end) {
+		uint16_t       key;
+		uint16_t       len;
+		const uint8_t *value;
+
+		/*
+		 * SvcParam:
+		 *   SvcParamKey           2 bytes
+		 *   SvcParamValue length  2 bytes
+		 *   SvcParamValue         variable
+		 */
+		if ((size_t) (end - p) < 4)
+			return;
+
+		key = read_be16_unaligned(p);
+		len = read_be16_unaligned(p + 2);
+		p += 4;
+
+		if ((size_t) (end - p) < len)
+			return;
+
+		value = p;
+
+		if (key == 4) {
+			/*
+			 * ipv4hint:
+			 *   sequence of IPv4 addresses, each 4 bytes.
+			 */
+			if (len % sizeof(struct in_addr) == 0) {
+				for (uint16_t off = 0; off < len; off += sizeof(struct in_addr)) {
+					struct in_addr addr;
+
+					memcpy(&addr, value + off, sizeof(addr));
+					hint_cb(AF_INET, &addr, user);
+				}
+			}
+		} else if (key == 6) {
+			/*
+			 * ipv6hint:
+			 *   sequence of IPv6 addresses, each 16 bytes.
+			 */
+			if (len % sizeof(struct in6_addr) == 0) {
+				for (uint16_t off = 0; off < len; off += sizeof(struct in6_addr)) {
+					struct in6_addr addr;
+
+					memcpy(&addr, value + off, sizeof(addr));
+					hint_cb(AF_INET6, &addr, user);
+				}
+			}
+		}
+
+		p += len;
+	}
+}
+
+typedef struct HttpsHintContext
+{
+	const char *domain_name;
+	bool        polluted;
+} HttpsHintContext;
+
+static void https_hint_cb(int af, const void *addr, void *user) {
+	HttpsHintContext *ctx = (HttpsHintContext *) user;
+	NET_ADDR          net_addr;
+	bool              polluted = false;
+	const char       *hint_name;
+
+	if (!ctx || !addr)
+		return;
+
+	memset(&net_addr, 0, sizeof(net_addr));
+
+	if (af == AF_INET) {
+		memcpy(&net_addr.v4, addr, sizeof(net_addr.v4));
+		polluted  = hash_table_contains(ipv4_table, &net_addr.v4);
+		hint_name = "ipv4hint";
+	} else if (af == AF_INET6) {
+		memcpy(&net_addr.v6, addr, sizeof(net_addr.v6));
+		polluted  = is_gfw_ipv6(&net_addr.v6) || hash_table_contains(ipv6_table, &net_addr.v6);
+		hint_name = "ipv6hint";
+	} else {
+		return;
+	}
+
+	/*
+	 * 与 A/AAAA 逻辑保持一致：
+	 * 只要解析到了 hint IP，就执行 mark-sites 检查。
+	 */
+	check_and_mark_sites(af, &net_addr, ctx->domain_name);
+
+	if (polluted) {
+		ctx->polluted = true;
+
+		if (CONFIG.debug) {
+			char ipaddr_str[INET6_ADDRSTRLEN];
+
+			if (inet_ntop(af, af == AF_INET ? (const void *) &net_addr.v4 : (const void *) &net_addr.v6, ipaddr_str,
+				      sizeof(ipaddr_str))) {
+				LOG_ERR("HTTPS RR for %s %s %s polluted, dropping...\n", ctx->domain_name, hint_name,
+					ipaddr_str);
+			}
+		}
+	}
+}
+
 static bool is_dns_polluted(const unsigned char *data, size_t len) {
 	if (len < sizeof(struct iphdr)) {
 		return false;
@@ -765,8 +996,8 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 			break;
 		}
 
-		uint16_t type     = ntohs(*(uint16_t *) (p));
-		uint16_t data_len = ntohs(*(uint16_t *) (p + 8));
+		uint16_t type     = read_be16_unaligned(p);
+		uint16_t data_len = read_be16_unaligned(p + 8);
 		p += 10; // 跳过 TYPE、CLASS、TTL 和 RDLENGTH
 
 		if (CONFIG.debug) {
@@ -774,40 +1005,102 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 		}
 
 		// 检查 RDATA 的长度是否超出剩余数据
-		if (p + data_len > end)
+		if ((size_t) (end - p) < data_len)
 			break;
 
 		NET_ADDR ip_addr;
 		int      af = 0;
 
-		// 如果是 A 记录（type == 1），提取 IP 地址
+		memset(&ip_addr, 0, sizeof(ip_addr));
+
+		// A record
 		if (type == 1 && data_len == sizeof(struct in_addr)) {
 			af = AF_INET;
 			memcpy(&ip_addr.v4, p, sizeof(ip_addr.v4));
-		} else if (type == 28 && data_len == sizeof(struct in6_addr)) {
-			// AAAA记录
-			af = AF_INET6;
-			memcpy(&ip_addr.v6, p, sizeof(ip_addr.v6));
-			result = is_gfw_ipv6(&ip_addr.v6);
-			if (result)
-				goto out;
+			result = hash_table_contains(ipv4_table, &ip_addr.v4);
 		}
 
-		if (af)
-			result = hash_table_contains(af == AF_INET ? ipv4_table : ipv6_table, &ip_addr);
-	out:
+		// AAAA record
+		else if (type == 28 && data_len == sizeof(struct in6_addr)) {
+			af = AF_INET6;
+			memcpy(&ip_addr.v6, p, sizeof(ip_addr.v6));
+			result = is_gfw_ipv6(&ip_addr.v6) || hash_table_contains(ipv6_table, &ip_addr.v6);
+		}
+
+		/*
+		 * HTTPS RR, Type 65
+		 *
+		 * HTTPS/SVCB RDATA format:
+		 *
+		 *   SvcPriority  2 bytes
+		 *   TargetName   DNS name, may use compression
+		 *   SvcParams    key-value list
+		 *
+		 * SvcParamKey:
+		 *   4 = ipv4hint
+		 *   6 = ipv6hint
+		 */
+		else if (type == 65) {
+			if (data_len >= 2) {
+				const uint8_t *target_name;
+				const uint8_t *svcparams;
+				size_t         target_len;
+				size_t         prefix_len;
+
+				target_name = p + 2; // skip SvcPriority
+				target_len  = skip_https_targetname(dns_data, end, target_name);
+
+				if (target_len) {
+					prefix_len = 2 + target_len;
+
+					if (prefix_len <= data_len) {
+						HttpsHintContext ctx = {
+							.domain_name = domain_name,
+							.polluted    = false,
+						};
+
+						svcparams = target_name + target_len;
+
+						parse_https_rr_hints(dns_data, dns_len, svcparams,
+								     (uint16_t) (data_len - prefix_len), https_hint_cb, &ctx);
+
+						if (ctx.polluted)
+							result = true;
+					}
+				} else if (CONFIG.debug) {
+					LOG_ERR("invalid HTTPS RR TargetName for %s, skipped\n", domain_name);
+				}
+			}
+		}
+
 		if (result) {
-			if (CONFIG.debug) {
+			/*
+			 * HTTPS RR 的污染日志已经在 https_hint_cb() 里打印。
+			 * 这里继续保留 A/AAAA 的原有日志格式。
+			 */
+			if (af && CONFIG.debug) {
 				char ipaddr_str[INET6_ADDRSTRLEN];
 
-				if (inet_ntop(af, &ip_addr, ipaddr_str, sizeof(ipaddr_str)))
+				if (inet_ntop(af, af == AF_INET ? (void *) &ip_addr.v4 : (void *) &ip_addr.v6, ipaddr_str,
+					      sizeof(ipaddr_str))) {
 					LOG_ERR("[%s] %s: %s polluted, dropping...\n", af == AF_INET ? "IPv4" : "IPv6",
 						domain_name, ipaddr_str);
+				}
 			}
+
 			break;
 		}
 
-		check_and_mark_sites(af, &ip_addr, domain_name);
+		/*
+		 * A/AAAA 记录继续执行原有 mark-sites 逻辑。
+		 * HTTPS RR 的 hint IP 已经在 https_hint_cb() 中执行过 mark-sites。
+		 *
+		 * 注意：原代码这里无条件调用 check_and_mark_sites(af, ...)
+		 * 在 af == 0 时会传入无效地址族；这里顺手修正。
+		 */
+		if (af)
+			check_and_mark_sites(af, &ip_addr, domain_name);
+
 		answer_section = p + data_len; // 跳过当前应答部分
 	}
 
@@ -1043,6 +1336,10 @@ out:
 	if (qh)
 		nfq_destroy_queue(qh);
 	if (h)
+		/*
+		 * HTTPS RR 的污染日志已经在 https_hint_cb() 里打印。
+		 * 这里继续保留 A/AAAA 的原有日志格式。
+		 */
 		nfq_close(h);
 	if (ipv4_table)
 		hash_table_free(ipv4_table);
