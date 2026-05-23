@@ -478,25 +478,29 @@ static int get_dns_name(const uint8_t *dns, size_t dns_len, const uint8_t *name,
 		return -1;
 	}
 
-	// 处理域名终止符
+	/*
+	 * 处理域名终止符。
+	 *
+	 * 注意：原代码这里没有在 domain_pos 后面补 '\0'，
+	 * 导致 strlen(domain) 继续读栈上的残留数据，debug 日志中会出现
+	 * www.bbc.com.xxx.yyy.zzz 这种伪造的长域名。
+	 */
 	if (domain_pos) {
-		// 截断最大域名
-		if (domain_pos == max_domain_len) {
-			domain[domain_pos - 1] = '\0';
-		}
+		if (domain_pos >= max_domain_len)
+			return -1;
 
-		size_t last = strlen(domain);
-		if (last && domain[last - 1] == '.')
-			domain[last - 1] = '\0';
+		domain[domain_pos] = '\0';
+
+		if (domain_pos > 0 && domain[domain_pos - 1] == '.')
+			domain[domain_pos - 1] = '\0';
 	} else {
-		// 空域名情况
 		if (max_domain_len > 0) {
 			domain[0] = '\0';
 		} else {
 			return -1;
 		}
-	}
 
+	}
 	// 返回域名结束后的偏移量
 	return (int) (name_end - name);
 }
@@ -1072,7 +1076,6 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 				}
 			}
 		}
-
 		if (result) {
 			/*
 			 * HTTPS RR 的污染日志已经在 https_hint_cb() 里打印。
