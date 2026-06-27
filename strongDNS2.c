@@ -1129,7 +1129,7 @@ static int packet_callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, stru
 }
 
 static void print_usage(const char *program_name) {
-	printf("Usage: %s [-d] [-q queue_num] [-4 ipv4_list] [-6 ipv6-list] [-b ipv4_bucket_size] [-B ipv6_bucket_size] [-s]\n",
+	printf("Usage: %s [-d] [-q queue_num] [-4 ipv4_list] [-6 ipv6-list] [-b ipv4_bucket_size] [-B ipv6_bucket_size]\n",
 	       program_name);
 	printf("  -d    Enable debug mode\n");
 	printf("  -m                     Enable mark sites (Default: Disabled)\n");
