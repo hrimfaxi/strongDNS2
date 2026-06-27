@@ -577,12 +577,18 @@ static void load_mark_file(const char *filepath, const char *filename) {
 
 		// 添加域名到链表
 		domain_node_t *node = malloc(sizeof(domain_node_t));
-		if (node) {
-			node->domain = strdup(p);
-			hlist_add_head(&node->node, &group->domains);
-			if (CONFIG.debug) {
-				printf("Loaded rule: [%s] -> %s\n", group->nft_name, node->domain);
-			}
+		if (!node)
+			continue;
+
+		node->domain = strdup(p);
+		if (!node->domain) {
+			free(node);
+			continue;
+		}
+
+		hlist_add_head(&node->node, &group->domains);
+		if (CONFIG.debug) {
+			printf("Loaded rule: [%s] -> %s\n", group->nft_name, node->domain);
 		}
 	}
 	fclose(fp);
