@@ -558,7 +558,7 @@ static void load_mark_file(const char *filepath, const char *filename) {
 		return;
 	}
 
-	mark_group_t *group = malloc(sizeof(mark_group_t));
+	mark_group_t *group = malloc(sizeof(*group));
 	if (!group) {
 		fclose(fp);
 		return;
@@ -566,6 +566,11 @@ static void load_mark_file(const char *filepath, const char *filename) {
 
 	INIT_HLIST_HEAD(&group->domains);
 	group->nft_name = strdup(filename);
+	if (!group->nft_name) {
+		free(group);
+		fclose(fp);
+		return;
+	}
 
 	char line[256];
 	while (fgets(line, sizeof(line), fp)) {
