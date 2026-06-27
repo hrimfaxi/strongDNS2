@@ -632,6 +632,26 @@ static void init_mark_sites() {
 	closedir(d);
 }
 
+static void free_mark_groups(void) {
+	mark_group_t      *group;
+	struct hlist_node *gpos, *gtmp;
+
+	hlist_for_each_entry_safe(group, gpos, gtmp, &CONFIG.mark_groups, node) {
+		domain_node_t     *dom;
+		struct hlist_node *dpos, *dtmp;
+
+		hlist_for_each_entry_safe(dom, dpos, dtmp, &group->domains, node) {
+			hlist_del(&dom->node);
+			free(dom->domain);
+			free(dom);
+		}
+
+		hlist_del(&group->node);
+		free(group->nft_name);
+		free(group);
+	}
+}
+
 typedef union
 {
 	struct in_addr  v4;
@@ -1359,6 +1379,7 @@ out:
 		hash_table_free(ipv4_table);
 	if (ipv6_table)
 		hash_table_free(ipv6_table);
+	free_mark_groups();
 
 	return ret;
 }
