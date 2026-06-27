@@ -515,7 +515,7 @@ static int add_nftable_ipset(const char *table_name, char *ipset_name, char *ip_
 		char *fmt_ip_addr;
 
 		if (asprintf(&fmt_ip_addr, "{ %s }", ip_addr) < 0)
-			return -1;
+			_exit(EXIT_FAILURE);
 
 		char *const argv[] = {
 			"/usr/sbin/nft", "add", "element", "inet", (char *) table_name, ipset_name, fmt_ip_addr, NULL,
@@ -523,7 +523,7 @@ static int add_nftable_ipset(const char *table_name, char *ipset_name, char *ip_
 
 		execve(argv[0], argv, NULL);
 		perror("execve");
-		exit(1);
+		_exit(EXIT_FAILURE);
 	}
 
 	int status;
@@ -533,7 +533,7 @@ static int add_nftable_ipset(const char *table_name, char *ipset_name, char *ip_
 		return -1;
 	}
 
-	return WIFEXITED(status) ? 0 : -1;
+	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
 // 辅助函数：去除字符串首尾空白
