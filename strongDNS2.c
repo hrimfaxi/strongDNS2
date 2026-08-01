@@ -1182,22 +1182,26 @@ static int parse_line(const char *description, const char *file_path, void (*cal
 
 	while (fgets(line, sizeof(line), fp)) {
 		line[sizeof(line) - 1] = '\0';
-		for (const char *p = filtered_chars; *p; p++) {
-			char *found = strchr(line, *p);
+
+		// 先去掉行首/行尾空白，避免 " 1.2.3.4" 这类行被截断成空行
+		char *p = trim_whitespace(line);
+
+		for (const char *f = filtered_chars; *f; f++) {
+			char *found = strchr(p, *f);
 			if (found)
 				*found = '\0';
 		}
 
-		if (!line[0])
+		if (!p[0])
 			continue;
 
 #if 0
 		if (CONFIG.debug) {
-			printf("%s: add line %s\n", __func__, line);
+			printf("%s: add line %s\n", __func__, p);
 		}
 #endif
 
-		(*callback)(data, line);
+		(*callback)(data, p);
 		cnt++;
 	}
 
