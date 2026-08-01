@@ -70,6 +70,7 @@
 #define IPV6_BUCKET_SIZE 64
 #define MAX_DNS_NAME_LEN 255
 #define MAX_JUMP_COUNT   10
+#define NFQ_RECV_BUF_SIZE (0xffff + 4096) /* 内核最大载荷 0xffff + 属性开销 */
 
 uint32_t XXH32(void const *const input, size_t const length, uint32_t const seed);
 
@@ -1263,7 +1264,7 @@ static void handle_signal(int sig) {
 int main(int argc, char **argv) {
 	struct nfq_handle   *h  = NULL;
 	struct nfq_q_handle *qh = NULL;
-	char                 buf[4096];
+	char                 buf[NFQ_RECV_BUF_SIZE];
 	int                  opt, ret = 0;
 
 	// 使用 getopt 解析命令行参数
