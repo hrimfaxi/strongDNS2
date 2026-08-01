@@ -962,6 +962,11 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 			return false; // 非 UDP 协议
 		}
 		ip_header_len = ip_header->ihl * 4; // IPv4 报头长度
+
+		// 拒绝 ihl < 5 的畸形 IPv4 头（否则会从 IP 头中间开始当 UDP 头解析）
+		if (ip_header_len < sizeof(struct iphdr)) {
+			return false;
+		}
 	} else {
 		return false; // 非 IPv4/IPv6 数据包
 	}
