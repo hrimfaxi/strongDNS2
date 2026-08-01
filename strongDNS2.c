@@ -1259,7 +1259,7 @@ int main(int argc, char **argv) {
 	int                  opt, ret = 0;
 
 	// 使用 getopt 解析命令行参数
-	while ((opt = getopt(argc, argv, "dq:4:6:b:B:M:msyh")) != -1) {
+	while ((opt = getopt(argc, argv, "dq:4:6:b:B:M:mh")) != -1) {
 		switch (opt) {
 		case 'd': // 处理 -d 参数
 			CONFIG.debug = true;
