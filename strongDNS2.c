@@ -916,10 +916,12 @@ static void https_hint_cb(int af, const void *addr, void *user) {
 	}
 
 	/*
-	 * 与 A/AAAA 逻辑保持一致：
-	 * 只要解析到了 hint IP，就执行 mark-sites 检查。
+	 * 与 A/AAAA 路径保持一致：污染 IP（GFW 伪造的假地址）
+	 * 不加入 mark 集合，只有解析到真实的站点 IP 时才执行
+	 * mark-sites 检查。
 	 */
-	check_and_mark_sites(af, &net_addr, ctx->domain_name);
+	if (!polluted)
+		check_and_mark_sites(af, &net_addr, ctx->domain_name);
 
 	if (polluted) {
 		ctx->polluted = true;
