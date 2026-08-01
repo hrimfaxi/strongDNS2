@@ -1017,12 +1017,6 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 
 	// 遍历应答部分，提取 A 记录
 	while (answer_section + 12 <= end) {
-		char answer_domain[MAX_DNS_NAME_LEN];
-
-		if (get_dns_name(dns_data, dns_len, answer_section, answer_domain, sizeof(answer_domain)) < 0) {
-			answer_domain[0] = '\0';
-		}
-
 		p = skip_dns_name(answer_section, end);
 		if (!p)
 			break;
