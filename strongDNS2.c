@@ -54,7 +54,8 @@
 #endif
 
 #define ARRAY_SIZE(n)     (sizeof(n) / sizeof(n[0]))
-#define LOG_ERR(fmt, ...) fprintf(stderr, fmt, ##__VA_ARGS__)
+#define LOG_ERR(fmt, ...)  fprintf(stderr, fmt, ##__VA_ARGS__)
+#define LOG_INFO(fmt, ...) fprintf(stderr, fmt, ##__VA_ARGS__)
 #define ASSERT(cond)                                                                                                           \
 	do {                                                                                                                   \
 		if (!(cond)) {                                                                                                 \
@@ -128,31 +129,31 @@ void hexdump(const void *data, size_t size) {
 
 	while (offset < size) {
 		// 打印偏移地址
-		printf("%08lx  ", (unsigned long) offset);
+		LOG_INFO("%08lx  ", (unsigned long) offset);
 
 		// 打印十六进制数据
 		for (size_t i = 0; i < 16; ++i) {
 			if (offset + i < size) {
-				printf("%02x ", byte_data[offset + i]);
+				LOG_INFO("%02x ", byte_data[offset + i]);
 			} else {
-				printf("   "); // 对齐空格
+				LOG_INFO("   "); // 对齐空格
 			}
 			if (i == 7) {
-				printf(" "); // 中间分割
+				LOG_INFO(" "); // 中间分割
 			}
 		}
 
 		// 打印 ASCII 表示
-		printf(" |");
+		LOG_INFO(" |");
 		for (size_t i = 0; i < 16; ++i) {
 			if (offset + i < size) {
 				unsigned char c = byte_data[offset + i];
-				printf("%c", isprint(c) ? c : '.'); // 可打印字符直接输出，不可打印字符用 `.` 表示
+				LOG_INFO("%c", isprint(c) ? c : '.'); // 可打印字符直接输出，不可打印字符用 `.` 表示
 			} else {
-				printf(" ");
+				LOG_INFO(" ");
 			}
 		}
-		printf("|\n");
+		LOG_INFO("|\n");
 
 		offset += 16;
 	}
@@ -322,7 +323,7 @@ void hash_table_free(HashTable *table) {
 void print_hash_stat(HashTable *table) {
 	size_t max_cnt = 0;
 
-	printf("Hash table: %p\n", (void *) table);
+	LOG_INFO("Hash table: %p\n", (void *) table);
 	for (uint32_t i = 0; i < table->bucket_size; i++) {
 		size_t cnt = 0;
 
@@ -333,12 +334,12 @@ void print_hash_stat(HashTable *table) {
 			cnt++;
 		}
 
-		printf("Hash [%03u]: %02zu elements\n", i, cnt);
+		LOG_INFO("Hash [%03u]: %02zu elements\n", i, cnt);
 		if (max_cnt < cnt)
 			max_cnt = cnt;
 	}
 
-	printf("max element count: %03zu\n", max_cnt);
+	LOG_INFO("max element count: %03zu\n", max_cnt);
 }
 
 uint32_t ipv4_hash_function(HashTable *table, const void *key) {
@@ -594,7 +595,7 @@ static void load_mark_file(const char *filepath, const char *filename) {
 
 		hlist_add_head(&node->node, &group->domains);
 		if (CONFIG.debug) {
-			printf("Loaded rule: [%s] -> %s\n", group->nft_name, node->domain);
+			LOG_INFO("Loaded rule: [%s] -> %s\n", group->nft_name, node->domain);
 		}
 	}
 	fclose(fp);
@@ -944,7 +945,7 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 	}
 
 	if (CONFIG.debug) {
-		printf("packet\n");
+		LOG_INFO("packet\n");
 		hexdump(data, len);
 	}
 
@@ -992,7 +993,7 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 	const uint8_t *end = dns_data + dns_len;
 
 	if (CONFIG.debug) {
-		printf("dns_data\n");
+		LOG_INFO("dns_data\n");
 		hexdump(dns_data, dns_len);
 	}
 
@@ -1005,7 +1006,7 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 		return false;
 
 	if (CONFIG.debug) {
-		printf("domain name: %s\n", domain_name);
+		LOG_INFO("domain name: %s\n", domain_name);
 	}
 
 	// 跳过 TYPE(2字节) 和 CLASS(2字节)
@@ -1019,7 +1020,7 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 	bool                 result         = false;
 
 	if (CONFIG.debug) {
-		printf("answer_section\n");
+		LOG_INFO("answer_section\n");
 		hexdump(answer_section, (size_t) (end - answer_section));
 	}
 
@@ -1038,7 +1039,7 @@ static bool is_dns_polluted(const unsigned char *data, size_t len) {
 		p += 10; // 跳过 TYPE、CLASS、TTL 和 RDLENGTH
 
 		if (CONFIG.debug) {
-			printf("type: %d, data_len: %d\n", type, data_len);
+			LOG_INFO("type: %d, data_len: %d\n", type, data_len);
 		}
 
 		// 检查 RDATA 的长度是否超出剩余数据
@@ -1167,16 +1168,16 @@ static int packet_callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, stru
 }
 
 static void print_usage(const char *program_name) {
-	printf("Usage: %s [-d] [-q queue_num] [-4 ipv4_list] [-6 ipv6-list] [-b ipv4_bucket_size] [-B ipv6_bucket_size]\n",
+	LOG_INFO("Usage: %s [-d] [-q queue_num] [-4 ipv4_list] [-6 ipv6-list] [-b ipv4_bucket_size] [-B ipv6_bucket_size]\n",
 	       program_name);
-	printf("  -d    Enable debug mode\n");
-	printf("  -m                     Enable mark sites (Default: Disabled)\n");
-	printf("  -q    queue_num        netfilter queue number (Default: %d)\n", QUEUE_NUM);
-	printf("  -4    ipv4_list_fn     polluted IPV4 list file path (Default: %s)\n", IPV4_LIST_FN);
-	printf("  -6    ipv6_list_fn     polluted IPv6 list file path (Default: %s)\n", IPV6_LIST_FN);
-	printf("  -b    ipv4_bucket_size IPv4 hash bucket size (Default: %d)\n", IPV4_BUCKET_SIZE);
-	printf("  -B    ipv6_bucket_size IPv6 hash bucket size (Default: %d)\n", IPV6_BUCKET_SIZE);
-	printf("  -M    mark_sites_dir   Set Marked site DIR\n");
+	LOG_INFO("  -d    Enable debug mode\n");
+	LOG_INFO("  -m                     Enable mark sites (Default: Disabled)\n");
+	LOG_INFO("  -q    queue_num        netfilter queue number (Default: %d)\n", QUEUE_NUM);
+	LOG_INFO("  -4    ipv4_list_fn     polluted IPV4 list file path (Default: %s)\n", IPV4_LIST_FN);
+	LOG_INFO("  -6    ipv6_list_fn     polluted IPv6 list file path (Default: %s)\n", IPV6_LIST_FN);
+	LOG_INFO("  -b    ipv4_bucket_size IPv4 hash bucket size (Default: %d)\n", IPV4_BUCKET_SIZE);
+	LOG_INFO("  -B    ipv6_bucket_size IPv6 hash bucket size (Default: %d)\n", IPV6_BUCKET_SIZE);
+	LOG_INFO("  -M    mark_sites_dir   Set Marked site DIR\n");
 }
 
 static int parse_line(const char *description, const char *file_path, void (*callback)(void *data, const char *line),
@@ -1210,7 +1211,7 @@ static int parse_line(const char *description, const char *file_path, void (*cal
 
 #if 0
 		if (CONFIG.debug) {
-			printf("%s: add line %s\n", __func__, p);
+			LOG_INFO("%s: add line %s\n", __func__, p);
 		}
 #endif
 
