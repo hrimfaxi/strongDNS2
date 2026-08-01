@@ -1148,6 +1148,11 @@ static int packet_callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, stru
 		return len;
 
 	(void) data, (void) nfmsg;
+	if (!ph) {
+		LOG_ERR("packet_callback: missing packet header\n");
+		return -1;
+	}
+
 	uint32_t id      = ntohl(ph->packet_id);
 	uint32_t verdict = NF_ACCEPT;
 
