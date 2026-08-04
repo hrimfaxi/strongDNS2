@@ -1,0 +1,63 @@
+[Unit]
+Description=strongDNS2 DNS Traffic Interception Service
+Documentation=https://github.com/hrimfaxi/strongDNS2
+After=network-online.target nftables.service
+Wants=network-online.target
+ConditionFileIsExecutable=/usr/bin/strongDNS2
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/strongDNS2
+
+# ========== 启用检查 ==========
+ExecStartPre=/bin/sh -c '[ "$ENABLED" = "true" ] || { echo "strongDNS2 disabled in /etc/default/strongDNS2"; exit 1; }'
+
+# ========== nftables 规则加载 ==========
+ExecStartPre=/bin/sh -c '\
+  nft delete table inet strongDNS2 2>/dev/null || true; \
+  nft add table inet strongDNS2; \
+  nft add chain inet strongDNS2 input "{ type filter hook input priority filter; policy accept; }"; \
+  nft add rule inet strongDNS2 input ip saddr ${DNS_SERVER_V4} udp sport 53 counter queue to ${QUEUENUM}; \
+  nft add rule inet strongDNS2 input ip6 saddr ${DNS_SERVER_V6} udp sport 53 counter queue to ${QUEUENUM}; \
+  nft add chain inet strongDNS2 forward "{ type filter hook forward priority filter; policy accept; }"; \
+  nft add rule inet strongDNS2 forward ip saddr ${DNS_SERVER_V4} udp sport 53 counter queue to ${QUEUENUM}; \
+  nft add rule inet strongDNS2 forward ip6 saddr ${DNS_SERVER_V6} udp sport 53 counter queue to ${QUEUENUM}'
+
+# 可选：mark_sites nft 钩子
+ExecStartPre=/bin/sh -c '\
+  [ "$USE_MARK_SITES" = "1" ] && \
+  [ -x "/usr/share/strongDNS2/mark_sites-nft.sh" ] && \
+  exec /usr/share/strongDNS2/mark_sites-nft.sh || true'
+
+# ========== 停止时清理 nftables（必须用 sh -c 包裹！）==========
+ExecStopPost=/bin/sh -c '/usr/sbin/nft delete table inet strongDNS2 2>/dev/null || true'
+
+# ========== 主进程 ==========
+# systemd 的 ExecStart 不支持 ${VAR:+word} 条件展开(也不经过 shell),
+# 必须用 sh -c 包裹, 且 $$ 转义让 shell 在运行时展开环境变量
+ExecStart=/bin/sh -c 'exec /usr/bin/strongDNS2 -q "$$QUEUENUM" $$([ "$$DEBUG" = "1" ] && echo -d) $$([ "$$USE_MARK_SITES" = "1" ] && echo -m)'
+
+# ========== 自动重启 ==========
+Restart=on-failure
+RestartSec=5s
+
+# ========== DynamicUser 沙盒保护 ==========
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/usr/share/strongDNS2
+
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+SystemCallFilter=@system-service @network-io
+SystemCallFilter=~@privileged @resources
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=strongDNS2
+
+[Install]
+WantedBy=multi-user.target
