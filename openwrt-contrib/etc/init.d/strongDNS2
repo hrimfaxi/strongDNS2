@@ -40,6 +40,21 @@ start_service() {
 
 	echo "Starting strongDNS2 service..."
 
+	# queue 是 nft 表达式(nft_queue),把包投递到用户态由 nfnetlink_queue 完成;
+	# 缺 nfnetlink_queue 时内核直接丢弃命中包("QUEUE == DROP if no one is waiting")。
+	# 不再在 OpenWrt Makefile 里写 kmod 依赖,改为启动时显式加载,失败则提示安装对应 kmod 包。
+	for _mod in nfnetlink_queue nft_queue; do
+		[ -d "/sys/module/$_mod" ] || modprobe "$_mod" 2>/dev/null || true
+		if [ ! -d "/sys/module/$_mod" ]; then
+			case "$_mod" in
+			nfnetlink_queue) _pkg=kmod-nfnetlink-queue ;;
+			nft_queue)       _pkg=kmod-nft-queue ;;
+			esac
+			echo "strongDNS2: kernel module $_mod not available, install $_pkg" >&2
+			exit 1
+		fi
+	done
+
 	nft delete table inet strongDNS2 >/dev/null 2>&1
 	cat <<EOF | nft -f -
 define DNS_SERVER_V4 = $DNS_SERVER_V4
