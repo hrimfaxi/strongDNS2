@@ -1,4 +1,4 @@
-﻿# strongDNS2
+# strongDNS2
 排除(2025年版本的)`GFW` `DNS`污染的小工具。可以在`openwrt`/`linux`下运行。
 
 ## DNS污染
@@ -23,6 +23,35 @@
 * 支持从`IPv4`/`IPv6`列表文件中读取记录进行过滤，可以应对未来`GFW`升级
 
 ## 编译
+
+### Ubuntu / ArchLinux 本机编译（PC/服务器）
+
+安装依赖:
+
+Ubuntu:
+```sh
+sudo apt update
+sudo apt install build-essential cmake pkg-config nftables \
+    libnetfilter-queue-dev libnfnetlink-dev libmnl-dev
+```
+
+ArchLinux:
+```sh
+sudo pacman -S --needed base-devel cmake pkgconf nftables \
+    libnetfilter_queue libnfnetlink libmnl
+```
+
+编译安装:
+```sh
+rm -f CMakeCache.txt   # 若之前交叉编译过，先清理缓存
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr .
+make -j$(nproc)
+sudo make install
+```
+
+> 必须使用 `-DCMAKE_INSTALL_PREFIX=/usr`：数据文件路径 `/usr/share/strongDNS2` 是编译进二进制的（`config.h`），`systemd` 服务也要求 `/usr/bin/strongDNS2`。如果安装到默认的 `/usr/local`，`systemd` 服务不会启动。
+
+### OpenWrt 交叉编译
 
 [编译方法](./compile.md)
 
@@ -53,6 +82,74 @@ opkg update
 opkg install kmod-nft-queue libnetfilter-queue1
 service strongDNS2 enable
 service strongDNS2 start
+```
+
+### Ubuntu / ArchLinux（PC/服务器）
+
+`make install` 会顺带把 openwrt 的 `init.d`/`capabilities` 文件装到 `/etc` 下，普通发行版上无影响，忽略即可。
+
+安装 `systemd` 服务:
+```sh
+sudo modprobe nfnetlink_queue        # 内核队列模块，通常已自动加载
+sudo cp contrib/etc/systemd/system/strongDNS2.service /etc/systemd/system/
+sudo cp contrib/etc/default/strongDNS2 /etc/default/
+sudo systemctl daemon-reload
+sudo systemctl enable --now strongDNS2
+```
+
+服务参数（`DNS_SERVER_V4`/`DNS_SERVER_V6` 列表、队列号、`USE_MARK_SITES` 开关等）在 `/etc/default/strongDNS2` 里改；`ENABLED=true` 时服务才会启动。
+
+#### 设置系统 DNS 为国际 DNS（必须）
+
+`strongDNS2` 只过滤来自国际 `DNS` 服务器（`8.8.8.8`/`1.1.1.1` 等）回应中的污染包，所以系统必须使用国际 `DNS`，并禁止 `DHCP`/`IPv6 RA` 下发的运营商 `DNS` 覆盖配置。
+
+`systemd-resolved`（Ubuntu 默认）——编辑 `/etc/systemd/resolved.conf`，`DNS` 和 `FallbackDNS` 都设为国际 `DNS`:
+```ini
+[Resolve]
+DNS=8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 2606:4700:4700::1111 2001:4860:4860::8888
+FallbackDNS=208.67.222.222 149.112.112.112 2620:fe::fe 2620:fe::9
+```
+```sh
+sudo systemctl restart systemd-resolved
+```
+
+`systemd-networkd`（无桌面的服务器常用）——`/etc/systemd/network/20-wired.network` 示例，`IPv4`/`DHCPv6`/`RA` 下发的 `DNS` 一律不使用。`MACAddress` 换成你自己网卡的（`ip link` 可查看）:
+```ini
+[Match]
+MACAddress=aa:bb:cc:dd:ee:ff
+
+[Network]
+DHCP=ipv4
+
+[DHCPv4]
+UseDNS=no
+
+[DHCPv6]
+UseDNS=no
+
+[IPv6AcceptRA]
+UseDNS=no
+```
+此时 `DNS` 完全来自上面 `resolved.conf` 里的国际 `DNS`:
+```sh
+sudo systemctl restart systemd-networkd
+```
+
+`NetworkManager`（`nmcli`）——同样忽略自动下发的 `DNS`（含 `IPv6`），手动指定国际 `DNS`:
+```sh
+nmcli con show
+sudo nmcli con mod "有线连接 1" ipv4.ignore-auto-dns yes ipv6.ignore-auto-dns yes
+sudo nmcli con mod "有线连接 1" ipv4.dns "8.8.8.8 1.1.1.1" ipv6.dns "2606:4700:4700::1111 2001:4860:4860::8888"
+nmcli con up "有线连接 1"
+```
+
+若 `NetworkManager` 与 `systemd-resolved` 同时使用，`nmcli` 的连接级 `DNS` 优先于 `resolved.conf`。
+
+验证:
+```sh
+systemctl status strongDNS2
+journalctl -u strongDNS2 -f
+dig reddit.com @8.8.8.8    # 参见下方 FAQ
 ```
 
 ## FAQ
